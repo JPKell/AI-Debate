@@ -1,0 +1,433 @@
+{% extends "base.html" %}
+
+{% block title %}AI-Debate — Live Model Debate Arena{% endblock %}
+
+{% block content %}
+<div class="app-shell">
+  <!-- Top Bar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="btn-toggle-history" class="icon-btn" title="Debates History" aria-label="Toggle History">
+        ☰
+      </button>
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">AI-Debate</span>
+      </div>
+      <input
+        id="debate-title"
+        class="title-input"
+        type="text"
+        value="New Debate"
+        placeholder="Debate title..."
+        aria-label="Debate title"
+      />
+      <span id="status-badge" class="status-badge status-draft">draft</span>
+    </div>
+
+    <div class="topbar-right">
+      <button id="btn-endpoint-status" class="endpoint-pill" title="Click to refresh /v1/models">
+        <span class="endpoint-dot"></span>
+        <span id="endpoint-label">Connecting…</span>
+      </button>
+
+      <label class="toggle-chip" title="Show or hide model thinking blocks">
+        <input id="toggle-thinking" type="checkbox" checked />
+        <span>Thinking</span>
+      </label>
+
+      <select id="theme-select" class="compact-select" aria-label="Theme">
+        <option value="obsidian">Obsidian</option>
+        <option value="daylight">Daylight</option>
+        <option value="midnight-neon">Midnight Neon</option>
+        <option value="warm-paper">Warm Paper</option>
+        <option value="forest-terminal">Forest Terminal</option>
+      </select>
+
+      {% if user.role == "admin" %}
+      <a href="/admin" class="btn btn-ghost btn-sm">Admin</a>
+      {% endif %}
+
+      <span class="user-pill" title="Signed in as {{ user.username }}">{{ user.username }}</span>
+      <button id="btn-logout" class="btn btn-ghost btn-sm">Logout</button>
+
+      <div class="mobile-panel-btns">
+        <button id="btn-mobile-a" class="btn btn-sm btn-accent-a">Model A</button>
+        <button id="btn-mobile-b" class="btn btn-sm btn-accent-b">Model B</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <div class="workspace">
+    <!-- History Drawer -->
+    <aside id="history-drawer" class="history-drawer">
+      <div class="drawer-header">
+        <h2>Debates</h2>
+        <button id="btn-new-debate" class="btn btn-primary btn-sm">+ New</button>
+      </div>
+      <div class="drawer-search">
+        <input
+          id="debates-search"
+          class="input input-sm"
+          type="search"
+          placeholder="Search debates…"
+          aria-label="Search debates"
+        />
+      </div>
+      <div id="debates-list" class="debates-list"></div>
+      <div class="drawer-footer">
+        <div class="endpoint-meta">Endpoint: <code>{{ owg_endpoint }}</code></div>
+      </div>
+    </aside>
+
+    <!-- Model A Panel -->
+    <aside id="panel-a" class="model-panel panel-a">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="side-badge badge-a">A</span>
+          <h3>Model A</h3>
+        </div>
+        <button class="icon-btn panel-close-btn" data-close-panel="panel-a" aria-label="Close">✕</button>
+      </div>
+
+      <div class="panel-body">
+        <div class="field">
+          <label for="a-model">Model</label>
+          <select id="a-model" class="input"></select>
+          <div id="a-model-meta" class="field-hint"></div>
+        </div>
+
+        <div class="field">
+          <label for="a-label">Display Name</label>
+          <input id="a-label" class="input" type="text" placeholder="e.g. Advocate Alpha" />
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="a-style">Style</label>
+            <select id="a-style" class="input"></select>
+          </div>
+          <div class="field">
+            <label for="a-conviction">Conviction</label>
+            <select id="a-conviction" class="input"></select>
+          </div>
+        </div>
+
+        <div id="a-custom-wrap" class="field hidden">
+          <label for="a-saved-prompt">Saved Custom Prompts</label>
+          <div class="field-row">
+            <select id="a-saved-prompt" class="input"></select>
+            <button id="a-save-prompt" class="btn btn-ghost btn-sm" type="button" title="Save as new reusable preset">Save</button>
+            <button id="a-update-prompt" class="btn btn-ghost btn-sm" type="button" title="Update selected custom prompt">Upd</button>
+            <button id="a-del-prompt" class="btn btn-ghost btn-sm" type="button" title="Delete selected custom prompt">✕</button>
+          </div>
+          <label for="a-custom-prompt">Custom Style Instructions</label>
+          <textarea id="a-custom-prompt" class="input textarea-sm" rows="3" placeholder="Custom debate persona..."></textarea>
+        </div>
+
+        <div class="field">
+          <label for="a-side">Side / Position</label>
+          <textarea id="a-side" class="input textarea-sm" rows="3" placeholder="What position should Model A defend?"></textarea>
+        </div>
+
+        <div class="context-meter" id="a-ctx-meter">
+          <div class="context-meter-head">
+            <span>Context Window</span>
+            <span id="a-ctx-text">—</span>
+          </div>
+          <div class="context-bar"><div id="a-ctx-fill" class="context-fill"></div></div>
+        </div>
+
+        <details class="advanced-box prompt-preview-box">
+          <summary>System Prompt Preview &amp; Override</summary>
+          <div class="advanced-content">
+            <pre id="a-prompt-preview" class="prompt-preview-pre"></pre>
+            <div class="field">
+              <label for="a-prompt-override">Manual Override (optional)</label>
+              <textarea
+                id="a-prompt-override"
+                class="input textarea-sm"
+                rows="3"
+                placeholder="Leave empty to use auto-composed prompt above..."
+              ></textarea>
+            </div>
+          </div>
+        </details>
+
+        <details class="advanced-box">
+          <summary>Advanced &amp; Thinking</summary>
+          <div class="advanced-content">
+            <div class="field-row">
+              <div class="field">
+                <label for="a-thinking">Thinking Mode</label>
+                <select id="a-thinking" class="input">
+                  <option value="default">Model default</option>
+                  <option value="on">On</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+              <div id="a-effort-wrap" class="field hidden">
+                <label for="a-effort">Effort</label>
+                <select id="a-effort" class="input"></select>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="a-temp">Temp</label>
+                <input id="a-temp" class="input" type="number" min="0" max="2" step="0.05" value="0.7" />
+              </div>
+              <div class="field">
+                <label for="a-top-p">Top-p</label>
+                <input id="a-top-p" class="input" type="number" min="0.05" max="1" step="0.05" value="0.95" />
+              </div>
+              <div class="field">
+                <label for="a-max-tokens">Max Tokens</label>
+                <input id="a-max-tokens" class="input" type="number" min="32" max="32768" step="64" value="2048" />
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="a-seed">Seed (optional)</label>
+                <input id="a-seed" class="input" type="number" step="1" placeholder="Auto" />
+              </div>
+            </div>
+            <div id="a-tokens-warn" class="warn-hint hidden">
+              Low max_tokens (&lt;512) with thinking may truncate before the answer begins.
+            </div>
+          </div>
+        </details>
+      </div>
+    </aside>
+
+    <!-- Center Chat Arena -->
+    <main class="arena">
+      <!-- Scene & Controls -->
+      <section class="scene-bar">
+        <div class="scene-input-wrap">
+          <label for="scene-prompt" class="sr-only">Debate Scene / Topic</label>
+          <textarea
+            id="scene-prompt"
+            class="scene-textarea"
+            rows="2"
+            placeholder="Describe the debate topic or scenario (e.g., Should open-weights AI models be regulated like critical infrastructure?)"
+          ></textarea>
+        </div>
+
+        <div class="controls-row">
+          <div class="controls-group">
+            <label class="inline-field">
+              <span>First:</span>
+              <select id="first-speaker" class="compact-select">
+                <option value="A">Model A</option>
+                <option value="B">Model B</option>
+                <option value="random">Random</option>
+              </select>
+            </label>
+            <label class="inline-field">
+              <span>Turns:</span>
+              <input id="turn-limit" class="compact-input" type="number" min="1" max="200" value="6" />
+            </label>
+            <label class="inline-field" title="Optional time limit in minutes">
+              <span>Min:</span>
+              <input id="time-limit-min" class="compact-input" type="number" min="1" max="120" placeholder="—" />
+            </label>
+          </div>
+
+          <div class="controls-group action-buttons">
+            <button id="btn-start" class="btn btn-primary">▶ Start</button>
+            <button id="btn-pause" class="btn btn-warn hidden">⏸ Pause</button>
+            <button id="btn-resume" class="btn btn-primary hidden">▶ Resume</button>
+
+            <div id="continue-group" class="continue-group hidden">
+              <button id="btn-continue-5" class="btn btn-primary btn-sm" type="button">+5 Turns</button>
+              <button id="btn-continue-10" class="btn btn-primary btn-sm" type="button">+10 Turns</button>
+              <button id="btn-continue-5m" class="btn btn-primary btn-sm" type="button">+5 Min</button>
+              <button id="btn-continue-custom" class="btn btn-secondary btn-sm" type="button">Custom…</button>
+            </div>
+
+            <button id="btn-stop" class="btn btn-danger hidden">■ Stop</button>
+            <button id="btn-compact" class="btn btn-ghost" title="Compact older turns into a rolling summary">🗜 Compact</button>
+
+            <div class="menu-wrap">
+              <button id="btn-fork-menu" class="btn btn-ghost" type="button" title="Duplicate or fork debate">⇄ Fork ▾</button>
+              <div id="fork-menu" class="popover-menu hidden">
+                <button id="btn-fork-copy" class="menu-item" type="button">Duplicate (keep sides)</button>
+                <button id="btn-fork-swap" class="menu-item" type="button">Fork &amp; Swap Sides</button>
+              </div>
+            </div>
+
+            <div class="menu-wrap">
+              <button id="btn-export-menu" class="btn btn-ghost" type="button" title="Export transcript">↓ Export ▾</button>
+              <div id="export-menu" class="popover-menu hidden">
+                <label class="menu-check">
+                  <input id="export-include-thinking" type="checkbox" checked />
+                  <span>Include thinking</span>
+                </label>
+                <label class="menu-check">
+                  <input id="export-include-stats" type="checkbox" checked />
+                  <span>Include turn stats</span>
+                </label>
+                <div class="menu-divider"></div>
+                <button id="btn-export-md" class="menu-item" type="button">Download Markdown (.md)</button>
+                <button id="btn-export-json" class="menu-item" type="button">Download JSON (.json)</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Structured Error / Info Banner -->
+      <div id="banner" class="banner hidden" role="alert">
+        <div class="banner-main">
+          <span id="banner-text"></span>
+          <span id="banner-action" class="banner-action hidden"></span>
+        </div>
+        <button id="btn-dismiss-banner" class="icon-btn" aria-label="Dismiss">✕</button>
+      </div>
+
+      <!-- Transcript Stream -->
+      <section id="chat-feed" class="chat-feed">
+        <div class="empty-state">
+          <h2>Ready to Debate</h2>
+          <p>Select your two models on the left &amp; right, set a topic above, and hit <strong>Start</strong>.</p>
+        </div>
+      </section>
+
+      <!-- Moderator Interjection Bar -->
+      <form id="moderator-form" class="moderator-bar">
+        <input
+          id="moderator-input"
+          class="input moderator-input"
+          type="text"
+          placeholder="Interject as Moderator (steers the next turn or adds context when paused)..."
+          autocomplete="off"
+        />
+        <button id="btn-interject" class="btn btn-secondary" type="submit">Send</button>
+      </form>
+    </main>
+
+    <!-- Model B Panel -->
+    <aside id="panel-b" class="model-panel panel-b">
+      <div class="panel-header">
+        <div class="panel-title-group">
+          <span class="side-badge badge-b">B</span>
+          <h3>Model B</h3>
+        </div>
+        <button class="icon-btn panel-close-btn" data-close-panel="panel-b" aria-label="Close">✕</button>
+      </div>
+
+      <div class="panel-body">
+        <div class="field">
+          <label for="b-model">Model</label>
+          <select id="b-model" class="input"></select>
+          <div id="b-model-meta" class="field-hint"></div>
+        </div>
+
+        <div class="field">
+          <label for="b-label">Display Name</label>
+          <input id="b-label" class="input" type="text" placeholder="e.g. Challenger Beta" />
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="b-style">Style</label>
+            <select id="b-style" class="input"></select>
+          </div>
+          <div class="field">
+            <label for="b-conviction">Conviction</label>
+            <select id="b-conviction" class="input"></select>
+          </div>
+        </div>
+
+        <div id="b-custom-wrap" class="field hidden">
+          <label for="b-saved-prompt">Saved Custom Prompts</label>
+          <div class="field-row">
+            <select id="b-saved-prompt" class="input"></select>
+            <button id="b-save-prompt" class="btn btn-ghost btn-sm" type="button" title="Save as new reusable preset">Save</button>
+            <button id="b-update-prompt" class="btn btn-ghost btn-sm" type="button" title="Update selected custom prompt">Upd</button>
+            <button id="b-del-prompt" class="btn btn-ghost btn-sm" type="button" title="Delete selected custom prompt">✕</button>
+          </div>
+          <label for="b-custom-prompt">Custom Style Instructions</label>
+          <textarea id="b-custom-prompt" class="input textarea-sm" rows="3" placeholder="Custom debate persona..."></textarea>
+        </div>
+
+        <div class="field">
+          <label for="b-side">Side / Position</label>
+          <textarea id="b-side" class="input textarea-sm" rows="3" placeholder="What position should Model B defend?"></textarea>
+        </div>
+
+        <div class="context-meter" id="b-ctx-meter">
+          <div class="context-meter-head">
+            <span>Context Window</span>
+            <span id="b-ctx-text">—</span>
+          </div>
+          <div class="context-bar"><div id="b-ctx-fill" class="context-fill"></div></div>
+        </div>
+
+        <details class="advanced-box prompt-preview-box">
+          <summary>System Prompt Preview &amp; Override</summary>
+          <div class="advanced-content">
+            <pre id="b-prompt-preview" class="prompt-preview-pre"></pre>
+            <div class="field">
+              <label for="b-prompt-override">Manual Override (optional)</label>
+              <textarea
+                id="b-prompt-override"
+                class="input textarea-sm"
+                rows="3"
+                placeholder="Leave empty to use auto-composed prompt above..."
+              ></textarea>
+            </div>
+          </div>
+        </details>
+
+        <details class="advanced-box">
+          <summary>Advanced &amp; Thinking</summary>
+          <div class="advanced-content">
+            <div class="field-row">
+              <div class="field">
+                <label for="b-thinking">Thinking Mode</label>
+                <select id="b-thinking" class="input">
+                  <option value="default">Model default</option>
+                  <option value="on">On</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+              <div id="b-effort-wrap" class="field hidden">
+                <label for="b-effort">Effort</label>
+                <select id="b-effort" class="input"></select>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="b-temp">Temp</label>
+                <input id="b-temp" class="input" type="number" min="0" max="2" step="0.05" value="0.7" />
+              </div>
+              <div class="field">
+                <label for="b-top-p">Top-p</label>
+                <input id="b-top-p" class="input" type="number" min="0.05" max="1" step="0.05" value="0.95" />
+              </div>
+              <div class="field">
+                <label for="b-max-tokens">Max Tokens</label>
+                <input id="b-max-tokens" class="input" type="number" min="32" max="32768" step="64" value="2048" />
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="b-seed">Seed (optional)</label>
+                <input id="b-seed" class="input" type="number" step="1" placeholder="Auto" />
+              </div>
+            </div>
+            <div id="b-tokens-warn" class="warn-hint hidden">
+              Low max_tokens (&lt;512) with thinking may truncate before the answer begins.
+            </div>
+          </div>
+        </details>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<div id="mobile-backdrop" class="mobile-backdrop hidden"></div>
+<script type="module" src="/static/js/app.js"></script>
+{% endblock %}

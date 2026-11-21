@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Settings — AI-Debate{% endblock %}
+
+{% block content %}
+<div class="admin-shell">
+  <header class="topbar">
+    <div class="topbar-left">
+      <a href="/" class="btn btn-ghost btn-sm">← Workspace</a>
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">AI-Debate Admin</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="user-pill">{{ user.username }} (admin)</span>
+      <button id="btn-admin-logout" class="btn btn-ghost btn-sm">Logout</button>
+    </div>
+  </header>
+
+  <main class="admin-main">
+    <div id="admin-banner" class="banner hidden" role="alert">
+      <span id="admin-banner-text"></span>
+      <button id="btn-dismiss-admin-banner" class="icon-btn" aria-label="Dismiss">✕</button>
+    </div>
+
+    <!-- openWeightGym Connection & Headers -->
+    <section class="admin-card">
+      <div class="admin-card-head">
+        <h2>openWeightGym Endpoint &amp; Headers</h2>
+        <button id="btn-test-conn" class="btn btn-secondary btn-sm" type="button">Test Connection</button>
+      </div>
+      <form id="settings-form" class="admin-form">
+        <div class="field-row">
+          <div class="field" style="max-width: 110px;">
+            <label for="cfg-protocol">Protocol</label>
+            <select id="cfg-protocol" class="input">
+              <option value="http">http</option>
+              <option value="https">https</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="cfg-host">Host / IP</label>
+            <input id="cfg-host" class="input" type="text" required placeholder="127.0.0.1" />
+          </div>
+          <div class="field" style="max-width: 120px;">
+            <label for="cfg-port">Port</label>
+            <input id="cfg-port" class="input" type="number" min="1" max="65535" required value="8442" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="cfg-api-key">API Key (encrypted at rest; leave blank to keep existing)</label>
+          <input id="cfg-api-key" class="input" type="password" autocomplete="new-password" placeholder="••••••••" />
+          <div id="cfg-key-hint" class="field-hint"></div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="cfg-suite-app">X-Suite-Application</label>
+            <input id="cfg-suite-app" class="input" type="text" value="ai-debate" />
+          </div>
+          <div class="field">
+            <label for="cfg-node">Default Node (X-Suite-Node)</label>
+            <input id="cfg-node" class="input" type="text" placeholder="Optional" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="cfg-priority">X-LoadCoach-Priority</label>
+            <select id="cfg-priority" class="input">
+              <option value="">Server default</option>
+              <option value="high">high</option>
+              <option value="normal">normal</option>
+              <option value="low">low</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="cfg-sensitivity">X-LoadCoach-Sensitivity</label>
+            <select id="cfg-sensitivity" class="input">
+              <option value="">Server default</option>
+              <option value="normal">normal</option>
+              <option value="sensitive">sensitive</option>
+              <option value="restricted">restricted</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="checkbox-row">
+          <label class="toggle-chip">
+            <input id="cfg-log-off" type="checkbox" />
+            <span>X-LoadCoach-Log: off (disables trace &amp; sensitivity headers)</span>
+          </label>
+          <label class="toggle-chip">
+            <input id="cfg-no-wake" type="checkbox" />
+            <span>X-Turnstile-No-Wake: 1</span>
+          </label>
+          <label class="toggle-chip">
+            <input id="cfg-open-reg" type="checkbox" />
+            <span>Allow Self-Registration</span>
+          </label>
+        </div>
+
+        <div class="admin-actions">
+          <button class="btn btn-primary" type="submit">Save Settings</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Server Busy / Force Stop -->
+    <section class="admin-card">
+      <div class="admin-card-head">
+        <h2>Global Debate Execution Slot</h2>
+        <button id="btn-refresh-status" class="btn btn-ghost btn-sm" type="button">Refresh</button>
+      </div>
+      <div class="busy-row">
+        <span id="server-busy-label">Checking…</span>
+        <button id="btn-force-stop" class="btn btn-danger btn-sm" type="button" disabled>Force Stop Active Debate</button>
+      </div>
+    </section>
+
+    <!-- User Management -->
+    <section class="admin-card">
+      <div class="admin-card-head">
+        <h2>Users</h2>
+      </div>
+      <form id="create-user-form" class="field-row" style="margin-bottom: 12px;">
+        <input id="new-username" class="input" type="text" required minlength="2" placeholder="Username" />
+        <input id="new-password" class="input" type="password" required minlength="6" placeholder="Password" />
+        <select id="new-role" class="input" style="max-width: 120px;">
+          <option value="user">user</option>
+          <option value="admin">admin</option>
+        </select>
+        <button class="btn btn-primary" type="submit">Add User</button>
+      </form>
+
+      <div id="users-table-wrap" class="users-table-wrap"></div>
+    </section>
+  </main>
+</div>
+
+<script type="module" src="/static/js/admin.js"></script>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Sign In — AI-Debate{% endblock %}
+
+{% block content %}
+<div class="auth-shell">
+  <div class="auth-card">
+    <div class="auth-header">
+      <div class="brand">
+        <span class="brand-dot"></span>
+        <span class="brand-name">AI-Debate</span>
+      </div>
+      <h1 id="auth-heading">Sign In</h1>
+      <p id="auth-subtitle" class="auth-subtitle">Enter your credentials to access your debate workspace.</p>
+    </div>
+
+    <div id="auth-banner" class="banner banner-error hidden" role="alert">
+      <span id="auth-banner-text"></span>
+    </div>
+
+    <form id="auth-form" class="auth-form">
+      <div class="field">
+        <label for="auth-username">Username</label>
+        <input id="auth-username" class="input" type="text" required minlength="2" maxlength="64" autocomplete="username" placeholder="e.g. admin" />
+      </div>
+      <div class="field">
+        <label for="auth-password">Password</label>
+        <input id="auth-password" class="input" type="password" required minlength="6" maxlength="256" autocomplete="current-password" placeholder="At least 6 characters" />
+      </div>
+      <button id="auth-submit" class="btn btn-primary btn-full" type="submit">Sign In</button>
+    </form>
+
+    <div id="auth-switch-wrap" class="auth-footer hidden">
+      <button id="btn-switch-mode" class="btn btn-ghost btn-sm" type="button">Create an account</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/static/js/login.js"></script>
+{% endblock %}

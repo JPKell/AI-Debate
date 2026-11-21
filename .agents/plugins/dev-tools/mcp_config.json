@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "project-dev": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "DIR=\"${PLUGIN_ROOT:-}\"; if [ -z \"$DIR\" ]; then if [ -f ./run_mcp.sh ]; then DIR=.; else DIR=.agents/plugins/dev-tools; fi; fi; exec \"$DIR/run_mcp.sh\""
+      ]
+    }
+  }
+}

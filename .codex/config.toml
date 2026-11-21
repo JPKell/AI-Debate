@@ -1,0 +1,6 @@
+# Codex CLI project MCP configuration pointing to the shared Tool-First Dev server.
+# Codex automatically loads AGENTS.md at the repository root.
+
+[mcp_servers.project-dev]
+command = ".agents/plugins/dev-tools/run_mcp.sh"
+args = []

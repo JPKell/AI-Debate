@@ -221,3 +221,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Tool-First Dev runtime state (keep template in git, ignore local env/index/logs)
+.agents/state/
+.agents/plugins/*/.venv/
+
+# AI-Debate local runtime database & auto-generated secret key
+data/
+
