@@ -91,16 +91,132 @@ def log_agent_fallback(
     )
 
 
-def summarize_metrics(log_path: Path, recent_limit: int = 15) -> dict[str, Any]:
-    """Summarize MCP call counts, average payload sizes, and fallback frequency."""
-    if not log_path.exists():
+def log_non_mcp_tool(
+    non_mcp_log_path: Path,
+    mcp_log_path: Path,
+    *,
+    agent: str,
+    hook: str,
+    tool_name: str,
+    target: str,
+    args_keys: list[str] | None = None,
+    conversation_id: str | None = None,
+    model_name: str | None = None,
+    step_idx: int | None = None,
+    error: str | None = None,
+    is_indexed_source: bool = False,
+    suggested_mcp_tool: str | None = None,
+    blocked_reason: str | None = None,
+) -> None:
+    """Record every non-MCP tool invocation (or blocked attempt) for MCP-adoption auditing."""
+    prev = _last_mcp_call(mcp_log_path)
+    followed_mcp: str | None = None
+    seconds_since: float | None = None
+    if prev and "ts" in prev:
+        try:
+            prev_ts = datetime.fromisoformat(prev["ts"])
+            delta = (_now() - prev_ts).total_seconds()
+            if 0 <= delta <= 120:
+                followed_mcp = prev.get("tool")
+                seconds_since = round(delta, 2)
+        except ValueError:
+            pass
+
+    append_event(
+        non_mcp_log_path,
+        {
+            "event": "non_mcp_tool",
+            "agent": agent,
+            "hook": hook,
+            "tool": tool_name,
+            "target": target[:300],
+            "args_keys": args_keys or [],
+            "conversation_id": conversation_id,
+            "model": model_name,
+            "step_idx": step_idx,
+            "error": error[:240] if error else None,
+            "is_indexed_source": is_indexed_source,
+            "suggested_mcp_tool": suggested_mcp_tool,
+            "blocked_reason": blocked_reason[:240] if blocked_reason else None,
+            "followed_mcp_tool": followed_mcp,
+            "seconds_since_mcp": seconds_since,
+        },
+    )
+
+
+def summarize_non_mcp_usage(
+    non_mcp_log_path: Path,
+    recent_limit: int = 15,
+) -> dict[str, Any]:
+    """Summarize all logged non-MCP tool calls, guardrail blocks, and missed MCP opportunities."""
+    if not non_mcp_log_path.exists():
         return {
+            "log_path": str(non_mcp_log_path),
+            "total_non_mcp_calls": 0,
+            "blocked_attempts": 0,
+            "mcp_opportunity_count": 0,
+            "by_tool": {},
+            "by_suggested_mcp": {},
+            "recent": [],
+        }
+
+    records: list[dict[str, Any]] = []
+    for line in non_mcp_log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    by_tool: Counter[str] = Counter()
+    by_suggested: Counter[str] = Counter()
+    blocked_attempts = 0
+    opportunity_count = 0
+
+    for rec in records:
+        tool = str(rec.get("tool") or "unknown")
+        by_tool[tool] += 1
+        if rec.get("hook") == "pre_tool_blocked":
+            blocked_attempts += 1
+        suggested = rec.get("suggested_mcp_tool")
+        if suggested:
+            opportunity_count += 1
+            by_suggested[str(suggested)] += 1
+
+    return {
+        "log_path": str(non_mcp_log_path),
+        "total_non_mcp_calls": len(records),
+        "blocked_attempts": blocked_attempts,
+        "mcp_opportunity_count": opportunity_count,
+        "by_tool": dict(sorted(by_tool.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "by_suggested_mcp": dict(sorted(by_suggested.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "recent": records[-recent_limit:],
+    }
+
+
+def summarize_metrics(
+    log_path: Path,
+    recent_limit: int = 15,
+    non_mcp_log_path: Path | None = None,
+) -> dict[str, Any]:
+    """Summarize MCP call counts, average payload sizes, fallback frequency, and non-MCP usage."""
+    non_mcp = (
+        summarize_non_mcp_usage(non_mcp_log_path, recent_limit=recent_limit)
+        if non_mcp_log_path is not None
+        else None
+    )
+    if not log_path.exists():
+        out: dict[str, Any] = {
             "total_mcp_calls": 0,
             "total_fallbacks": 0,
             "by_tool": {},
             "fallbacks_after_mcp": {},
             "recent": [],
         }
+        if non_mcp is not None:
+            out["non_mcp_summary"] = non_mcp
+        return out
 
     records: list[dict[str, Any]] = []
     for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -142,10 +258,15 @@ def summarize_metrics(log_path: Path, recent_limit: int = 15) -> dict[str, Any]:
         for tool, b in sorted(by_tool.items())
     }
 
-    return {
+    result: dict[str, Any] = {
         "total_mcp_calls": total_mcp,
         "total_fallbacks": total_fallbacks,
         "by_tool": compact_by_tool,
         "fallbacks_after_mcp": dict(fallbacks_after),
         "recent": records[-recent_limit:],
     }
+    if non_mcp is not None:
+        total_all = total_mcp + non_mcp["total_non_mcp_calls"]
+        non_mcp["mcp_share_pct"] = round((total_mcp / total_all) * 100.0, 1) if total_all else 0.0
+        result["non_mcp_summary"] = non_mcp
+    return result

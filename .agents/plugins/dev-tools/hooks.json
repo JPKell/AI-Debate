@@ -23,7 +23,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "write_file|edit_file|read_file|run_command",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",

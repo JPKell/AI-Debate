@@ -3,7 +3,7 @@ Purpose: Pydantic request/response DTOs and domain models for debates, compactio
 Role: schema
 Patterns: structured-errors
 Depends on: pydantic, typing
-Exposes: ModelParticipantConfig, ModelInfo, DebateCreate, DebateUpdate, ContinueRequest, InterjectRequest, ForkRequest, MessageRecord, CompactionRecord, DebateRecord, ActiveTurnSnapshot, DebateDetail, UserRecord, AuthCredentials, UserPreferencesUpdate, AdminUserCreate, AdminUserUpdate, AdminSettingsResponse, AdminSettingsUpdate, TestConnectionRequest, CustomPromptCreate, CustomPromptUpdate, CustomPromptRecord
+Exposes: ModelParticipantConfig, NarratorConfig, ModelInfo, DebateCreate, DebateUpdate, ContinueRequest, InterjectRequest, ForkRequest, MessageRecord, CompactionRecord, DebateRecord, ActiveTurnSnapshot, DebateDetail, UserRecord, AuthCredentials, UserPreferencesUpdate, AdminUserCreate, AdminUserUpdate, AdminSettingsResponse, AdminSettingsUpdate, TestConnectionRequest, CustomPromptCreate, CustomPromptUpdate, CustomPromptRecord
 Tests: tests/test_prompt_builder.py, tests/test_llm_client.py, tests/test_debate_flow.py, tests/test_compaction.py, tests/test_auth_and_roles.py
 Invariants: Zero I/O or database dependencies; never includes password hashes or plaintext API keys in response DTOs.
 """
@@ -19,8 +19,10 @@ ConvictionType = Literal["immovable", "firm", "balanced", "flexible", "synthesis
 ThinkingModeType = Literal["default", "off", "on"]
 SpeakerChoice = Literal["A", "B", "random"]
 ResolvedSpeaker = Literal["A", "B"]
+TurnSpeaker = Literal["A", "B", "narrator"]
+NarratorCadenceMode = Literal["every_turn", "every_n", "random_1_to_n"]
 DebateStatus = Literal["draft", "running", "paused", "limit_reached", "stopped", "error"]
-MessageSender = Literal["A", "B", "moderator"]
+MessageSender = Literal["A", "B", "narrator", "moderator"]
 CompactionTrigger = Literal["auto", "manual", "context_too_small"]
 UserRole = Literal["admin", "user"]
 PriorityLevel = Literal["high", "normal", "low"]
@@ -37,6 +39,9 @@ class ModelParticipantConfig(BaseModel):
     conviction: ConvictionType = "firm"
     side: str = Field(default="", max_length=2000)
     system_prompt_override: str = Field(default="", max_length=8000)
+    dialogue_only: bool = False
+    no_thoughts_as_actions: bool = False
+    no_self_narration: bool = False
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     top_p: float = Field(default=0.95, gt=0.0, le=1.0)
     max_tokens: int = Field(default=2048, ge=32, le=32768)
@@ -50,6 +55,26 @@ class ModelParticipantConfig(BaseModel):
             return self.label.strip()
         if self.model_id.strip():
             return self.model_id.strip()
+        return fallback
+
+
+class NarratorConfig(BaseModel):
+    """Configuration for the optional 3rd Action Narrator model."""
+
+    model_id: str = Field(default="", max_length=256)
+    label: str = Field(default="Narrator", max_length=80)
+    system_prompt: str = Field(default="", max_length=8000)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    top_p: float = Field(default=0.95, gt=0.0, le=1.0)
+    max_tokens: int = Field(default=1024, ge=32, le=32768)
+    seed: int | None = None
+    thinking_mode: ThinkingModeType = "default"
+    reasoning_effort: str | None = Field(default=None, max_length=64)
+
+    def effective_label(self, fallback: str = "Narrator") -> str:
+        """Return narrator display label, falling back to 'Narrator'."""
+        if self.label.strip():
+            return self.label.strip()
         return fallback
 
 
@@ -83,6 +108,10 @@ class DebateCreate(BaseModel):
     show_thinking: bool = True
     model_a_config: ModelParticipantConfig = Field(default_factory=ModelParticipantConfig)
     model_b_config: ModelParticipantConfig = Field(default_factory=ModelParticipantConfig)
+    narrator_enabled: bool = False
+    narrator_config: NarratorConfig = Field(default_factory=NarratorConfig)
+    narrator_cadence_mode: NarratorCadenceMode = "every_turn"
+    narrator_cadence_n: int = Field(default=1, ge=1, le=20)
 
 
 class DebateUpdate(BaseModel):
@@ -98,6 +127,10 @@ class DebateUpdate(BaseModel):
     show_thinking: bool | None = None
     model_a_config: ModelParticipantConfig | None = None
     model_b_config: ModelParticipantConfig | None = None
+    narrator_enabled: bool | None = None
+    narrator_config: NarratorConfig | None = None
+    narrator_cadence_mode: NarratorCadenceMode | None = None
+    narrator_cadence_n: int | None = Field(default=None, ge=1, le=20)
 
 
 class ContinueRequest(BaseModel):
@@ -179,6 +212,14 @@ class DebateRecord(BaseModel):
     model_b_ctx_loaded: int | None = None
     model_b_ctx_guaranteed: int | None = None
     model_b_ctx_max: int | None = None
+    narrator_enabled: bool = False
+    narrator_config: NarratorConfig = Field(default_factory=NarratorConfig)
+    narrator_cadence_mode: NarratorCadenceMode = "every_turn"
+    narrator_cadence_n: int = 1
+    narrator_turns_until_next: int | None = None
+    narrator_ctx_loaded: int | None = None
+    narrator_ctx_guaranteed: int | None = None
+    narrator_ctx_max: int | None = None
     last_error: str | None = None
     created_at: str
     updated_at: str
@@ -190,7 +231,7 @@ class ActiveTurnSnapshot(BaseModel):
 
     debate_id: str
     turn_index: int
-    speaker: ResolvedSpeaker
+    speaker: TurnSpeaker
     model_id: str
     thinking: str = ""
     content: str = ""

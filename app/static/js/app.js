@@ -272,8 +272,9 @@ function formatContext(n) {
 }
 
 function populateModelSelects() {
-  for (const slot of ["a", "b"]) {
+  for (const slot of ["a", "b", "narrator"]) {
     const sel = el(`${slot}-model`);
+    if (!sel) continue;
     const prev = sel.value;
     sel.innerHTML = "";
     if (state.models.length === 0) {
@@ -303,6 +304,7 @@ function populateModelSelects() {
   }
   updateModelMetadataUI("a");
   updateModelMetadataUI("b");
+  updateNarratorModelMetadataUI();
 }
 
 function populatePresetSelects() {
@@ -391,6 +393,98 @@ function updateTokenWarning(slot) {
   warn.classList.toggle("hidden", !(maxTok > 0 && maxTok < 512 && mode !== "off"));
 }
 
+function updateNarratorModelMetadataUI() {
+  const sel = el("narrator-model");
+  const effortWrap = el("narrator-effort-wrap");
+  const effortSel = el("narrator-effort");
+  if (!sel || !effortWrap || !effortSel) return;
+  const info = state.models.find((m) => m.id === sel.value);
+  if (info && info.supports_reasoning_effort && info.reasoning_effort_levels.length > 0) {
+    effortWrap.classList.remove("hidden");
+    const prev = effortSel.value;
+    effortSel.innerHTML = `<option value="">Default</option>`;
+    for (const lvl of info.reasoning_effort_levels) {
+      const opt = document.createElement("option");
+      opt.value = lvl;
+      opt.textContent = lvl;
+      effortSel.appendChild(opt);
+    }
+    if (prev) effortSel.value = prev;
+  } else {
+    effortWrap.classList.add("hidden");
+    effortSel.innerHTML = "";
+  }
+  updateNarratorStatusPill();
+}
+
+function updateNarratorStatusPill() {
+  const pill = el("narrator-status-pill");
+  const enabled = Boolean(el("narrator-enabled")?.checked);
+  const mode = el("narrator-cadence-mode")?.value || "every_turn";
+  const n = Math.max(1, Number(el("narrator-cadence-n")?.value || 1));
+  const modelId = el("narrator-model")?.value || "";
+  el("narrator-n-wrap")?.classList.toggle("hidden", mode === "every_turn");
+  if (!pill) return;
+  if (!enabled) {
+    pill.textContent = "Off";
+    pill.classList.remove("enabled");
+    return;
+  }
+  const cadenceLabel =
+    mode === "every_turn"
+      ? "Every turn"
+      : mode === "every_n"
+        ? `Every ${n} turns`
+        : `Random 1–${n} turns`;
+  pill.textContent = modelId ? `${modelId} · ${cadenceLabel}` : `On · ${cadenceLabel}`;
+  pill.classList.add("enabled");
+}
+
+function readNarratorFromUI() {
+  const effortEl = el("narrator-effort");
+  const seedRaw = el("narrator-seed") ? el("narrator-seed").value.trim() : "";
+  const seedVal = seedRaw !== "" && Number.isFinite(Number(seedRaw)) ? Math.trunc(Number(seedRaw)) : null;
+  return {
+    model_id: el("narrator-model")?.value || "",
+    label: el("narrator-label")?.value.trim() || "Narrator",
+    system_prompt: el("narrator-prompt")?.value || "",
+    temperature: Number(el("narrator-temp")?.value || 0.7),
+    top_p: 0.95,
+    max_tokens: Number(el("narrator-max-tokens")?.value || 1024),
+    seed: seedVal,
+    thinking_mode: el("narrator-thinking")?.value || "default",
+    reasoning_effort: effortEl && effortEl.value ? effortEl.value : null,
+  };
+}
+
+function applyNarratorToUI(debate) {
+  const cfg = debate.narrator_config || {};
+  if (el("narrator-enabled")) el("narrator-enabled").checked = Boolean(debate.narrator_enabled);
+  const modelSel = el("narrator-model");
+  if (modelSel) {
+    if (cfg.model_id && !state.models.some((m) => m.id === cfg.model_id)) {
+      const opt = document.createElement("option");
+      opt.value = cfg.model_id;
+      opt.textContent = `${cfg.model_id} (offline)`;
+      modelSel.appendChild(opt);
+    }
+    if (cfg.model_id) modelSel.value = cfg.model_id;
+  }
+  if (el("narrator-label")) el("narrator-label").value = cfg.label || "Narrator";
+  if (el("narrator-prompt")) el("narrator-prompt").value = cfg.system_prompt || "";
+  if (el("narrator-cadence-mode")) el("narrator-cadence-mode").value = debate.narrator_cadence_mode || "every_turn";
+  if (el("narrator-cadence-n")) el("narrator-cadence-n").value = debate.narrator_cadence_n ?? 1;
+  if (el("narrator-temp")) el("narrator-temp").value = cfg.temperature ?? 0.7;
+  if (el("narrator-max-tokens")) el("narrator-max-tokens").value = cfg.max_tokens ?? 1024;
+  if (el("narrator-seed")) el("narrator-seed").value = cfg.seed ?? "";
+  if (el("narrator-thinking")) el("narrator-thinking").value = cfg.thinking_mode || "default";
+  updateNarratorModelMetadataUI();
+  if (cfg.reasoning_effort && el("narrator-effort")) {
+    el("narrator-effort").value = cfg.reasoning_effort;
+  }
+  updateNarratorStatusPill();
+}
+
 function readParticipantFromUI(slot) {
   const effortEl = el(`${slot}-effort`);
   const seedRaw = el(`${slot}-seed`) ? el(`${slot}-seed`).value.trim() : "";
@@ -403,6 +497,9 @@ function readParticipantFromUI(slot) {
     conviction: el(`${slot}-conviction`).value || "firm",
     side: el(`${slot}-side`).value || "",
     system_prompt_override: el(`${slot}-prompt-override`) ? el(`${slot}-prompt-override`).value || "" : "",
+    dialogue_only: Boolean(el(`${slot}-dialogue-only`)?.checked),
+    no_thoughts_as_actions: Boolean(el(`${slot}-no-thoughts`)?.checked),
+    no_self_narration: Boolean(el(`${slot}-no-self-narration`)?.checked),
     temperature: Number(el(`${slot}-temp`).value || 0.7),
     top_p: Number(el(`${slot}-top-p`).value || 0.95),
     max_tokens: Number(el(`${slot}-max-tokens`).value || 2048),
@@ -431,6 +528,9 @@ function applyParticipantToUI(slot, cfg) {
   if (el(`${slot}-prompt-override`)) {
     el(`${slot}-prompt-override`).value = cfg.system_prompt_override || "";
   }
+  if (el(`${slot}-dialogue-only`)) el(`${slot}-dialogue-only`).checked = Boolean(cfg.dialogue_only);
+  if (el(`${slot}-no-thoughts`)) el(`${slot}-no-thoughts`).checked = Boolean(cfg.no_thoughts_as_actions);
+  if (el(`${slot}-no-self-narration`)) el(`${slot}-no-self-narration`).checked = Boolean(cfg.no_self_narration);
   el(`${slot}-temp`).value = cfg.temperature ?? 0.7;
   el(`${slot}-top-p`).value = cfg.top_p ?? 0.95;
   el(`${slot}-max-tokens`).value = cfg.max_tokens ?? 2048;
@@ -449,9 +549,31 @@ function composeSystemPromptPreview(slot) {
   const me = readParticipantFromUI(slot);
   const opp = readParticipantFromUI(other);
   const scene = (el("scene-prompt")?.value || "").trim();
+  const narratorEnabled = Boolean(el("narrator-enabled")?.checked);
+  const oppLabel = opp.label || opp.model_id || (other === "a" ? "Model A" : "Model B");
+
+  const rules = [];
+  if (me.dialogue_only) {
+    rules.push(
+      `- Direct dialogue only: speak directly to '${oppLabel}' only. Do not address an audience, moderator, or narrator, and do not write third-person prose or stage directions.`
+    );
+  }
+  if (me.no_thoughts_as_actions) {
+    rules.push(
+      "- No internal thoughts in output: never express inner monologue, private thoughts, or unspoken feelings as actions, italics, or dialogue. Output only observable spoken words or outward behavior."
+    );
+  }
+  if (me.no_self_narration || narratorEnabled) {
+    rules.push(
+      "- Do not narrate physical actions, scene changes, or outcomes for yourself or others; a separate Action Narrator handles scene actions and consequences. Focus on what you say."
+    );
+  }
 
   if (me.system_prompt_override.trim()) {
-    const base = me.system_prompt_override.trim();
+    let base = me.system_prompt_override.trim();
+    if (rules.length) {
+      base = `${base}\n\nInteraction Rules:\n${rules.join("\n")}`;
+    }
     if (scene && !base.includes(scene)) {
       return `${base}\n\nDebate Scene / Topic:\n${scene}`;
     }
@@ -459,7 +581,6 @@ function composeSystemPromptPreview(slot) {
   }
 
   const myLabel = me.label || me.model_id || (slot === "a" ? "Model A" : "Model B");
-  const oppLabel = opp.label || opp.model_id || (other === "a" ? "Model A" : "Model B");
   const styles = state.presets.styles || {};
   const convictions = state.presets.convictions || {};
   const styleText =
@@ -469,13 +590,18 @@ function composeSystemPromptPreview(slot) {
   const convText =
     convictions[me.conviction]?.instruction || convictions.firm?.instruction || "";
 
+  const openingLine = me.dialogue_only
+    ? `You are '${myLabel}', speaking directly to '${oppLabel}' in a live back-and-forth exchange.`
+    : `You are '${myLabel}', participating in a live back-and-forth debate against '${oppLabel}'.`;
+
   const parts = [
-    `You are '${myLabel}', participating in a live back-and-forth debate against '${oppLabel}'.`,
+    openingLine,
     "Respond directly to your opponent in clear, substantive, well-structured prose. Keep each turn focused and engaging (avoid repeating earlier points verbatim).",
   ];
   if (styleText) parts.push(`Debate Style:\n${styleText}`);
   if (convText) parts.push(convText);
   if (me.side.trim()) parts.push(`Your Assigned Side / Position:\n${me.side.trim()}`);
+  if (rules.length) parts.push(`Interaction Rules:\n${rules.join("\n")}`);
   if (scene) parts.push(`Debate Scene / Topic:\n${scene}`);
   return parts.join("\n\n");
 }
@@ -501,6 +627,10 @@ function readDebatePayloadFromUI() {
     show_thinking: el("toggle-thinking").checked,
     model_a_config: readParticipantFromUI("a"),
     model_b_config: readParticipantFromUI("b"),
+    narrator_enabled: Boolean(el("narrator-enabled")?.checked),
+    narrator_config: readNarratorFromUI(),
+    narrator_cadence_mode: el("narrator-cadence-mode")?.value || "every_turn",
+    narrator_cadence_n: Math.max(1, Number(el("narrator-cadence-n")?.value || 1)),
   };
 }
 
@@ -516,6 +646,7 @@ function applyDebateToUI(debate) {
   el("toggle-thinking").checked = state.showThinking;
   applyParticipantToUI("a", debate.model_a_config);
   applyParticipantToUI("b", debate.model_b_config);
+  applyNarratorToUI(debate);
   updatePromptPreviews();
   renderDebateControls();
   renderContextMeters();
@@ -587,6 +718,9 @@ function renderContextMeters() {
 function speakerDisplayName(sender) {
   const d = state.currentDebate;
   if (sender === "moderator") return "Moderator";
+  if (sender === "narrator") {
+    return (d && d.narrator_config && d.narrator_config.label) || "Narrator";
+  }
   const cfg = d ? (sender === "A" ? d.model_a_config : d.model_b_config) : null;
   if (cfg && cfg.label) return cfg.label;
   if (cfg && cfg.model_id) return cfg.model_id;
@@ -595,7 +729,13 @@ function speakerDisplayName(sender) {
 
 function buildMessageCardHtml(msg) {
   const rowClass =
-    msg.sender === "A" ? "msg-a" : msg.sender === "B" ? "msg-b" : "msg-moderator";
+    msg.sender === "A"
+      ? "msg-a"
+      : msg.sender === "B"
+        ? "msg-b"
+        : msg.sender === "narrator"
+          ? "msg-narrator"
+          : "msg-moderator";
   const senderName = escapeHtml(speakerDisplayName(msg.sender));
 
   let thinkingHtml = "";
@@ -612,7 +752,7 @@ function buildMessageCardHtml(msg) {
   }
 
   let statsHtml = "";
-  if (msg.sender === "A" || msg.sender === "B") {
+  if (msg.sender === "A" || msg.sender === "B" || msg.sender === "narrator") {
     const bits = [];
     if (msg.answered_model_id || msg.model_id) {
       bits.push(escapeHtml(msg.answered_model_id || msg.model_id));
@@ -627,7 +767,9 @@ function buildMessageCardHtml(msg) {
       (d
         ? msg.sender === "A"
           ? d.model_a_ctx_loaded || d.model_a_ctx_guaranteed
-          : d.model_b_ctx_loaded || d.model_b_ctx_guaranteed
+          : msg.sender === "B"
+            ? d.model_b_ctx_loaded || d.model_b_ctx_guaranteed
+            : d.narrator_ctx_loaded || d.narrator_ctx_guaranteed
         : null);
     if (msg.prompt_tokens != null && effCtx) {
       const ctxPct = Math.min(100, Math.round((msg.prompt_tokens / effCtx) * 100));
@@ -763,7 +905,12 @@ function renderLiveTurn() {
   const empty = feed.querySelector(".empty-state");
   if (empty) empty.remove();
 
-  const rowClass = turn.speaker === "A" ? "msg-a" : "msg-b";
+  const rowClass =
+    turn.speaker === "A"
+      ? "msg-a"
+      : turn.speaker === "B"
+        ? "msg-b"
+        : "msg-narrator";
   let card = document.getElementById("live-turn-card");
   if (!card) {
     card = document.createElement("article");
@@ -1328,6 +1475,9 @@ function bindEvents() {
     "a-conviction",
     "a-custom-prompt",
     "a-side",
+    "a-dialogue-only",
+    "a-no-thoughts",
+    "a-no-self-narration",
     "a-prompt-override",
     "a-thinking",
     "a-effort",
@@ -1341,6 +1491,9 @@ function bindEvents() {
     "b-conviction",
     "b-custom-prompt",
     "b-side",
+    "b-dialogue-only",
+    "b-no-thoughts",
+    "b-no-self-narration",
     "b-prompt-override",
     "b-thinking",
     "b-effort",
@@ -1348,14 +1501,42 @@ function bindEvents() {
     "b-top-p",
     "b-max-tokens",
     "b-seed",
+    "narrator-enabled",
+    "narrator-model",
+    "narrator-label",
+    "narrator-cadence-mode",
+    "narrator-cadence-n",
+    "narrator-thinking",
+    "narrator-effort",
+    "narrator-temp",
+    "narrator-max-tokens",
+    "narrator-seed",
+    "narrator-prompt",
   ];
   for (const id of autosaveIds) {
     const node = el(id);
     if (!node) continue;
-    const evt = node.tagName === "SELECT" ? "change" : "input";
+    const isToggle = node.tagName === "SELECT" || node.type === "checkbox";
+    const evt = isToggle ? "change" : "input";
     node.addEventListener(evt, () => {
       if (id === "a-model") updateModelMetadataUI("a");
       if (id === "b-model") updateModelMetadataUI("b");
+      if (id === "narrator-model") updateNarratorModelMetadataUI();
+      if (id === "narrator-cadence-mode") {
+        const nInput = el("narrator-cadence-n");
+        if (nInput && Number(nInput.value || 1) <= 1) {
+          if (node.value === "every_n") nInput.value = "2";
+          else if (node.value === "random_1_to_n") nInput.value = "3";
+        }
+      }
+      if (
+        id === "narrator-enabled" ||
+        id === "narrator-cadence-mode" ||
+        id === "narrator-cadence-n" ||
+        id === "narrator-model"
+      ) {
+        updateNarratorStatusPill();
+      }
       if (id === "a-style") el("a-custom-wrap").classList.toggle("hidden", node.value !== "custom");
       if (id === "b-style") el("b-custom-wrap").classList.toggle("hidden", node.value !== "custom");
       if (id === "a-max-tokens" || id === "a-thinking") updateTokenWarning("a");
@@ -1501,6 +1682,10 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
+
+  if (window.innerWidth >= 1100 && window.innerWidth < 1380) {
+    el("history-drawer")?.classList.add("collapsed");
+  }
 
   try {
     state.user = await apiRequest("/api/auth/me");

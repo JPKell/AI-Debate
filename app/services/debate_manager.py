@@ -27,6 +27,7 @@ from app.schemas import (
     DebateRecord,
     MessageRecord,
     ResolvedSpeaker,
+    TurnSpeaker,
 )
 from app.services.compaction import CompactionService
 from app.services.llm_client import OpenWeightGymClient
@@ -101,6 +102,12 @@ class DebateManager:
                     message="Select models for both Model A and Model B before starting the debate.",
                     status_code=400,
                 )
+            if debate.narrator_enabled and not debate.narrator_config.model_id.strip():
+                raise AppError(
+                    code="narrator_model_required",
+                    message="Select a model for the Action Narrator or disable the Narrator before starting.",
+                    status_code=400,
+                )
 
             resolved = debate.resolved_first_speaker
             if resolved is None:
@@ -110,8 +117,14 @@ class DebateManager:
                     else debate.first_speaker
                 )
 
-            for slot, cfg in (("A", debate.model_a_config), ("B", debate.model_b_config)):
-                info = self._llm_client.get_cached_model(cfg.model_id)
+            slot_models: list[tuple[TurnSpeaker, str]] = [
+                ("A", debate.model_a_config.model_id),
+                ("B", debate.model_b_config.model_id),
+            ]
+            if debate.narrator_enabled:
+                slot_models.append(("narrator", debate.narrator_config.model_id))
+            for slot, model_id in slot_models:
+                info = self._llm_client.get_cached_model(model_id)
                 if info is not None:
                     self._repo.update_model_context(
                         debate_id,
@@ -121,10 +134,18 @@ class DebateManager:
                         max_ctx=info.context_max,
                     )
 
+            initial_countdown = debate.narrator_turns_until_next
+            update_cd = False
+            if debate.narrator_enabled and initial_countdown is None:
+                initial_countdown = self._roll_narrator_countdown(debate)
+                update_cd = True
+
             updated = self._repo.update_runtime_state(
                 debate_id,
                 status="running",
                 resolved_first_speaker=resolved,
+                narrator_turns_until_next=initial_countdown,
+                update_narrator_countdown=update_cd,
                 clear_error=True,
             )
             self._active_debate_id = debate_id
@@ -349,6 +370,15 @@ class DebateManager:
                 return "A"
         return debate.resolved_first_speaker or "A"
 
+    @staticmethod
+    def _roll_narrator_countdown(debate: DebateRecord) -> int:
+        n = max(1, debate.narrator_cadence_n)
+        if debate.narrator_cadence_mode == "every_turn":
+            return 1
+        if debate.narrator_cadence_mode == "every_n":
+            return n
+        return random.randint(1, n)
+
     async def _flush_pending_interjections(self, debate_id: str) -> None:
         pending = self._pending_interjections.pop(debate_id, [])
         for text in pending:
@@ -366,17 +396,26 @@ class DebateManager:
                 history = self._repo.list_messages(debate_id)
                 completed_turns = sum(1 for m in history if m.sender in ("A", "B"))
 
-                if debate.turn_limit is not None and completed_turns >= debate.turn_limit:
-                    final_status = "limit_reached"
-                    break
-                if (
-                    debate.time_limit_seconds is not None
-                    and debate.elapsed_active_seconds >= debate.time_limit_seconds
-                ):
-                    final_status = "limit_reached"
-                    break
+                narrator_due = (
+                    debate.narrator_enabled
+                    and bool(debate.narrator_config.model_id.strip())
+                    and debate.narrator_turns_until_next == 0
+                )
 
-                speaker = self._next_speaker(debate, history)
+                if not narrator_due:
+                    if debate.turn_limit is not None and completed_turns >= debate.turn_limit:
+                        final_status = "limit_reached"
+                        break
+                    if (
+                        debate.time_limit_seconds is not None
+                        and debate.elapsed_active_seconds >= debate.time_limit_seconds
+                    ):
+                        final_status = "limit_reached"
+                        break
+
+                speaker: TurnSpeaker = (
+                    "narrator" if narrator_due else self._next_speaker(debate, history)
+                )
                 latest_compaction = self._repo.get_latest_compaction(debate_id)
 
                 # Run queued manual compaction or proactive auto-compaction before this turn.
@@ -397,7 +436,13 @@ class DebateManager:
                         latest_compaction = compacted
                         self._publish(debate_id, "compaction", {"compaction": compacted.model_dump()})
 
-                participant = debate.model_a_config if speaker == "A" else debate.model_b_config
+                participant = (
+                    debate.model_a_config
+                    if speaker == "A"
+                    else debate.model_b_config
+                    if speaker == "B"
+                    else debate.narrator_config
+                )
                 messages = build_messages_for_speaker(
                     debate=debate,
                     history=history,
@@ -466,9 +511,26 @@ class DebateManager:
                     finish_reason=turn_meta.get("finish_reason"),
                 )
 
+                latest_debate = self._repo.require_debate(debate_id)
+                next_countdown: int | None = None
+                update_cd = False
+                if latest_debate.narrator_enabled:
+                    update_cd = True
+                    if speaker == "narrator":
+                        next_countdown = self._roll_narrator_countdown(latest_debate)
+                    else:
+                        base_cd = (
+                            latest_debate.narrator_turns_until_next
+                            if latest_debate.narrator_turns_until_next is not None
+                            else self._roll_narrator_countdown(latest_debate)
+                        )
+                        next_countdown = max(0, base_cd - 1)
+
                 refreshed = self._repo.update_runtime_state(
                     debate_id,
                     elapsed_active_seconds=debate.elapsed_active_seconds + (duration_ms / 1000.0),
+                    narrator_turns_until_next=next_countdown,
+                    update_narrator_countdown=update_cd,
                 )
                 self._active_turn = None
                 self._publish(
@@ -575,7 +637,7 @@ class DebateManager:
         debate_id: str,
         debate: DebateRecord,
         history: list[MessageRecord],
-        speaker: ResolvedSpeaker,
+        speaker: TurnSpeaker,
         participant: Any,
         messages: list[dict[str, str]],
         thinking_chunks: list[str],

@@ -17,7 +17,7 @@ from app.schemas import (
     CompactionTrigger,
     DebateRecord,
     MessageRecord,
-    ResolvedSpeaker,
+    TurnSpeaker,
 )
 from app.services.llm_client import OpenWeightGymClient
 
@@ -48,19 +48,21 @@ class CompactionService:
     def effective_window_for_speaker(
         self,
         debate: DebateRecord,
-        speaker: ResolvedSpeaker,
+        speaker: TurnSpeaker,
     ) -> int | None:
         """Return active context window (`loaded_context`, falling back to `guaranteed`) for a speaker."""
         if speaker == "A":
             return debate.model_a_ctx_loaded or debate.model_a_ctx_guaranteed
-        return debate.model_b_ctx_loaded or debate.model_b_ctx_guaranteed
+        if speaker == "B":
+            return debate.model_b_ctx_loaded or debate.model_b_ctx_guaranteed
+        return debate.narrator_ctx_loaded or debate.narrator_ctx_guaranteed
 
     def should_auto_compact(
         self,
         debate: DebateRecord,
         history: list[MessageRecord],
         latest_compaction: CompactionRecord | None,
-        speaker: ResolvedSpeaker,
+        speaker: TurnSpeaker,
     ) -> bool:
         """Determine whether the upcoming turn exceeds `auto_compact_threshold` of the speaker's window.
 
@@ -68,7 +70,7 @@ class CompactionService:
             debate: Current DebateRecord with per-model context bounds and threshold.
             history: Full ordered transcript messages.
             latest_compaction: Most recent compaction, if any.
-            speaker: Next speaker ('A' or 'B').
+            speaker: Next speaker ('A', 'B', or 'narrator').
         Returns:
             True if compaction should run before invoking `speaker`.
         Side effects:
@@ -83,7 +85,13 @@ class CompactionService:
         if len(uncompacted) <= debate.keep_recent_turns:
             return False
 
-        participant = debate.model_a_config if speaker == "A" else debate.model_b_config
+        participant = (
+            debate.model_a_config
+            if speaker == "A"
+            else debate.model_b_config
+            if speaker == "B"
+            else debate.narrator_config
+        )
         last_speaker_idx = None
         last_prompt_tokens = 0
         for idx in range(len(uncompacted) - 1, -1, -1):
@@ -108,12 +116,22 @@ class CompactionService:
 
     def select_summarizer_model(self, debate: DebateRecord) -> str:
         """Pick the active debating model with the larger context window, preferring non-adaptor models."""
+        slots: list[tuple[str, str, int | None, int | None]] = [
+            ("A", debate.model_a_config.model_id, debate.model_a_ctx_loaded, debate.model_a_ctx_guaranteed),
+            ("B", debate.model_b_config.model_id, debate.model_b_ctx_loaded, debate.model_b_ctx_guaranteed),
+        ]
+        if debate.narrator_enabled and debate.narrator_config.model_id.strip():
+            slots.append(
+                (
+                    "narrator",
+                    debate.narrator_config.model_id,
+                    debate.narrator_ctx_loaded,
+                    debate.narrator_ctx_guaranteed,
+                )
+            )
         candidates: list[tuple[int, int, str]] = []
-        for _slot, cfg, loaded, guaranteed in (
-            ("A", debate.model_a_config, debate.model_a_ctx_loaded, debate.model_a_ctx_guaranteed),
-            ("B", debate.model_b_config, debate.model_b_ctx_loaded, debate.model_b_ctx_guaranteed),
-        ):
-            model_id = cfg.model_id.strip()
+        for _slot, raw_model_id, loaded, guaranteed in slots:
+            model_id = raw_model_id.strip()
             if not model_id:
                 continue
             cached = self._llm_client.get_cached_model(model_id)
@@ -178,6 +196,7 @@ class CompactionService:
 
         label_a = debate.model_a_config.effective_label("Model A")
         label_b = debate.model_b_config.effective_label("Model B")
+        label_n = debate.narrator_config.effective_label("Narrator")
 
         transcript_lines: list[str] = []
         if latest is not None:
@@ -187,6 +206,8 @@ class CompactionService:
                 who = f"{label_a} (Model A)"
             elif msg.sender == "B":
                 who = f"{label_b} (Model B)"
+            elif msg.sender == "narrator":
+                who = f"{label_n} (Narrator)"
             else:
                 who = "Moderator"
             transcript_lines.append(f"Turn {msg.turn_index} — {who}:\n{msg.content.strip()}")

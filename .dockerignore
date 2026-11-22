@@ -11,7 +11,9 @@ __pycache__
 .ruff_cache
 .agents/state
 .agents/plugins/*/.venv
+data
 *.db
 *.sqlite
 *.sqlite3
 *.swp
+.secret_key

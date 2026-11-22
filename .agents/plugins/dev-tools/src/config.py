@@ -18,6 +18,7 @@ class ToolkitConfig:
     state_dir: Path
     db_path: Path
     usage_log_path: Path
+    non_mcp_log_path: Path
     project_name: str
     source_dirs: tuple[str, ...]
     header_required_dirs: tuple[str, ...]
@@ -106,6 +107,7 @@ def load_config(explicit_root: str | Path | None = None) -> ToolkitConfig:
         state_dir=state_dir,
         db_path=state_dir / "knowledge_graph.db",
         usage_log_path=state_dir / "tool_usage.jsonl",
+        non_mcp_log_path=state_dir / "non_mcp_tool_usage.jsonl",
         project_name=raw.get("project_name", project_root.name),
         source_dirs=tuple(raw.get("source_dirs", ["app", "tests"])),
         header_required_dirs=tuple(raw.get("header_required_dirs", ["app"])),

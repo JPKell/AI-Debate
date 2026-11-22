@@ -69,6 +69,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DEV_TOOLS_PYTHON=/opt/dev-tools-venv/bin/python \
     APP_VENV=/opt/app-venv \
     UV_PROJECT_ENVIRONMENT=/opt/app-venv \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
     PATH="/opt/app-venv/bin:/home/${USER_NAME}/.local/bin:${PATH}"
 
 # System utilities + native build tools for Python wheels and agent CLIs
@@ -124,9 +125,12 @@ RUN uv venv /opt/dev-tools-venv \
     && uv pip install --python /opt/dev-tools-venv/bin/python -r /tmp/dev-tools/pyproject.toml \
     && rm -rf /tmp/dev-tools \
     && uv venv /opt/app-venv \
-    && uv pip install --python /opt/app-venv/bin/python -r /tmp/app-reqs/requirements.txt \
+    && uv pip install --python /opt/app-venv/bin/python -r /tmp/app-reqs/requirements.txt playwright \
     && rm -rf /tmp/app-reqs \
-    && chown -R "${USER_UID}:${USER_GID}" /opt/dev-tools-venv /opt/app-venv
+    && /opt/app-venv/bin/playwright install-deps chromium \
+    && /opt/app-venv/bin/playwright install chromium \
+    && rm -rf /var/lib/apt/lists/* \
+    && chown -R "${USER_UID}:${USER_GID}" /opt/dev-tools-venv /opt/app-venv /opt/ms-playwright
 
 # Pre-create workspace and agent credential mountpoints owned by dev so named volumes inherit dev:dev
 RUN mkdir -p /workspace \
@@ -194,7 +198,7 @@ gemini() {
 EOF
 
 # --- Project-specific port (edit for other repos) ---
-EXPOSE 8000
+EXPOSE 8008
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash"]

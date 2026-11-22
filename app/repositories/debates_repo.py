@@ -14,7 +14,6 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 from app.errors import DebateNotFoundError
 from app.repositories.db import get_connection
@@ -28,7 +27,9 @@ from app.schemas import (
     MessageRecord,
     MessageSender,
     ModelParticipantConfig,
+    NarratorConfig,
     ResolvedSpeaker,
+    TurnSpeaker,
 )
 
 
@@ -43,6 +44,7 @@ def _row_to_debate(row: sqlite3.Row, message_count: int | None = None) -> Debate
         if "message_count" in keys and row["message_count"] is not None
         else (message_count or 0)
     )
+    raw_narrator = row["narrator_config"] if "narrator_config" in keys and row["narrator_config"] else "{}"
     return DebateRecord(
         id=row["id"],
         user_id=row["user_id"],
@@ -67,6 +69,26 @@ def _row_to_debate(row: sqlite3.Row, message_count: int | None = None) -> Debate
         model_b_ctx_loaded=row["model_b_ctx_loaded"],
         model_b_ctx_guaranteed=row["model_b_ctx_guaranteed"],
         model_b_ctx_max=row["model_b_ctx_max"],
+        narrator_enabled=bool(row["narrator_enabled"]) if "narrator_enabled" in keys else False,
+        narrator_config=NarratorConfig.model_validate_json(raw_narrator),
+        narrator_cadence_mode=(
+            row["narrator_cadence_mode"]
+            if "narrator_cadence_mode" in keys and row["narrator_cadence_mode"]
+            else "every_turn"
+        ),
+        narrator_cadence_n=int(
+            row["narrator_cadence_n"]
+            if "narrator_cadence_n" in keys and row["narrator_cadence_n"] is not None
+            else 1
+        ),
+        narrator_turns_until_next=(
+            row["narrator_turns_until_next"] if "narrator_turns_until_next" in keys else None
+        ),
+        narrator_ctx_loaded=row["narrator_ctx_loaded"] if "narrator_ctx_loaded" in keys else None,
+        narrator_ctx_guaranteed=(
+            row["narrator_ctx_guaranteed"] if "narrator_ctx_guaranteed" in keys else None
+        ),
+        narrator_ctx_max=row["narrator_ctx_max"] if "narrator_ctx_max" in keys else None,
         last_error=row["last_error"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -135,8 +157,11 @@ class DebatesRepository:
                     id, user_id, title, scene_prompt, first_speaker, resolved_first_speaker,
                     status, turn_limit, time_limit_seconds, elapsed_active_seconds,
                     auto_compact_threshold, keep_recent_turns, show_thinking,
-                    model_a_config, model_b_config, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, NULL, 'draft', ?, ?, 0.0, ?, ?, ?, ?, ?, ?, ?)
+                    model_a_config, model_b_config,
+                    narrator_enabled, narrator_config, narrator_cadence_mode,
+                    narrator_cadence_n, narrator_turns_until_next,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, NULL, 'draft', ?, ?, 0.0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 """,
                 (
                     debate_id,
@@ -151,6 +176,10 @@ class DebatesRepository:
                     1 if payload.show_thinking else 0,
                     payload.model_a_config.model_dump_json(),
                     payload.model_b_config.model_dump_json(),
+                    1 if payload.narrator_enabled else 0,
+                    payload.narrator_config.model_dump_json(),
+                    payload.narrator_cadence_mode,
+                    payload.narrator_cadence_n,
                     now,
                     now,
                 ),
@@ -262,6 +291,32 @@ class DebatesRepository:
             if "model_b_config" in fields_set and patch.model_b_config is not None
             else current.model_b_config
         )
+        narrator_enabled = (
+            patch.narrator_enabled
+            if "narrator_enabled" in fields_set and patch.narrator_enabled is not None
+            else current.narrator_enabled
+        )
+        narrator_config = (
+            patch.narrator_config
+            if "narrator_config" in fields_set and patch.narrator_config is not None
+            else current.narrator_config
+        )
+        narrator_cadence_mode = (
+            patch.narrator_cadence_mode
+            if "narrator_cadence_mode" in fields_set and patch.narrator_cadence_mode is not None
+            else current.narrator_cadence_mode
+        )
+        narrator_cadence_n = (
+            patch.narrator_cadence_n
+            if "narrator_cadence_n" in fields_set and patch.narrator_cadence_n is not None
+            else current.narrator_cadence_n
+        )
+        cadence_changed = (
+            narrator_enabled != current.narrator_enabled
+            or narrator_cadence_mode != current.narrator_cadence_mode
+            or narrator_cadence_n != current.narrator_cadence_n
+        )
+        narrator_turns_until_next = None if cadence_changed else current.narrator_turns_until_next
 
         now = _utc_now()
         with get_connection(self.db_path) as conn:
@@ -270,7 +325,9 @@ class DebatesRepository:
                 UPDATE debates
                 SET title = ?, scene_prompt = ?, first_speaker = ?, turn_limit = ?,
                     time_limit_seconds = ?, auto_compact_threshold = ?, keep_recent_turns = ?,
-                    show_thinking = ?, model_a_config = ?, model_b_config = ?, updated_at = ?
+                    show_thinking = ?, model_a_config = ?, model_b_config = ?,
+                    narrator_enabled = ?, narrator_config = ?, narrator_cadence_mode = ?,
+                    narrator_cadence_n = ?, narrator_turns_until_next = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -284,6 +341,11 @@ class DebatesRepository:
                     1 if show_thinking else 0,
                     model_a_config.model_dump_json(),
                     model_b_config.model_dump_json(),
+                    1 if narrator_enabled else 0,
+                    narrator_config.model_dump_json(),
+                    narrator_cadence_mode,
+                    narrator_cadence_n,
+                    narrator_turns_until_next,
                     now,
                     debate_id,
                 ),
@@ -301,10 +363,12 @@ class DebatesRepository:
         update_turn_limit: bool = False,
         time_limit_seconds: int | None = None,
         update_time_limit: bool = False,
+        narrator_turns_until_next: int | None = None,
+        update_narrator_countdown: bool = False,
         last_error: str | None = None,
         clear_error: bool = False,
     ) -> DebateRecord:
-        """Update lifecycle status, runtime timers, resolved speaker, or last error."""
+        """Update lifecycle status, runtime timers, narrator countdown, resolved speaker, or last error."""
         current = self.require_debate(debate_id)
         new_status = status if status is not None else current.status
         new_resolved = (
@@ -319,6 +383,11 @@ class DebatesRepository:
         )
         new_turn_limit = turn_limit if update_turn_limit else current.turn_limit
         new_time_limit = time_limit_seconds if update_time_limit else current.time_limit_seconds
+        new_narrator_cd = (
+            narrator_turns_until_next
+            if update_narrator_countdown
+            else current.narrator_turns_until_next
+        )
         if clear_error:
             new_error = None
         elif last_error is not None:
@@ -332,7 +401,8 @@ class DebatesRepository:
                 """
                 UPDATE debates
                 SET status = ?, resolved_first_speaker = ?, elapsed_active_seconds = ?,
-                    turn_limit = ?, time_limit_seconds = ?, last_error = ?, updated_at = ?
+                    turn_limit = ?, time_limit_seconds = ?, narrator_turns_until_next = ?,
+                    last_error = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -341,6 +411,7 @@ class DebatesRepository:
                     new_elapsed,
                     new_turn_limit,
                     new_time_limit,
+                    new_narrator_cd,
                     new_error,
                     now,
                     debate_id,
@@ -351,13 +422,13 @@ class DebatesRepository:
     def update_model_context(
         self,
         debate_id: str,
-        speaker: Literal["A", "B"],
+        speaker: TurnSpeaker,
         *,
         loaded: int | None = None,
         guaranteed: int | None = None,
         max_ctx: int | None = None,
     ) -> None:
-        """Update observed context window metadata for Model A or Model B."""
+        """Update observed context window metadata for Model A, Model B, or Narrator."""
         current = self.require_debate(debate_id)
         now = _utc_now()
         if speaker == "A":
@@ -369,13 +440,22 @@ class DebatesRepository:
                 SET model_a_ctx_loaded = ?, model_a_ctx_guaranteed = ?, model_a_ctx_max = ?, updated_at = ?
                 WHERE id = ?
             """
-        else:
+        elif speaker == "B":
             new_loaded = loaded if loaded is not None else current.model_b_ctx_loaded
             new_guaranteed = guaranteed if guaranteed is not None else current.model_b_ctx_guaranteed
             new_max = max_ctx if max_ctx is not None else current.model_b_ctx_max
             sql = """
                 UPDATE debates
                 SET model_b_ctx_loaded = ?, model_b_ctx_guaranteed = ?, model_b_ctx_max = ?, updated_at = ?
+                WHERE id = ?
+            """
+        else:
+            new_loaded = loaded if loaded is not None else current.narrator_ctx_loaded
+            new_guaranteed = guaranteed if guaranteed is not None else current.narrator_ctx_guaranteed
+            new_max = max_ctx if max_ctx is not None else current.narrator_ctx_max
+            sql = """
+                UPDATE debates
+                SET narrator_ctx_loaded = ?, narrator_ctx_guaranteed = ?, narrator_ctx_max = ?, updated_at = ?
                 WHERE id = ?
             """
         with get_connection(self.db_path) as conn:
@@ -556,6 +636,10 @@ class DebatesRepository:
                 show_thinking=source.show_thinking,
                 model_a_config=cfg_a,
                 model_b_config=cfg_b,
+                narrator_enabled=source.narrator_enabled,
+                narrator_config=source.narrator_config.model_copy(deep=True),
+                narrator_cadence_mode=source.narrator_cadence_mode,
+                narrator_cadence_n=source.narrator_cadence_n,
             ),
             user_id=user_id if user_id is not None else source.user_id,
         )

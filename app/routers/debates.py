@@ -262,10 +262,12 @@ async def export_debate(
             who = debate.model_a_config.effective_label("Model A")
         elif msg.sender == "B":
             who = debate.model_b_config.effective_label("Model B")
+        elif msg.sender == "narrator":
+            who = f"{debate.narrator_config.effective_label('Narrator')} (Action)"
         else:
             who = "Moderator"
         lines.append(f"### Turn {msg.turn_index} — {who}")
-        if include_stats and msg.sender in ("A", "B"):
+        if include_stats and msg.sender in ("A", "B", "narrator"):
             stat_parts = []
             if msg.answered_model_id or msg.model_id:
                 stat_parts.append(f"model: `{msg.answered_model_id or msg.model_id}`")

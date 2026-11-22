@@ -131,6 +131,22 @@
           <textarea id="a-side" class="input textarea-sm" rows="3" placeholder="What position should Model A defend?"></textarea>
         </div>
 
+        <div class="roleplay-rules">
+          <span class="roleplay-rules-title">Dialogue &amp; Roleplay Rules</span>
+          <label class="rule-check" title="Speak directly to the other model only (no audience address or prose)">
+            <input id="a-dialogue-only" type="checkbox" />
+            <span>Talk to other model only</span>
+          </label>
+          <label class="rule-check" title="Do not write internal thoughts or inner monologue into actions or dialogue">
+            <input id="a-no-thoughts" type="checkbox" />
+            <span>No thoughts as actions</span>
+          </label>
+          <label class="rule-check" title="Avoid self-narrating physical actions and outcomes (leave to Narrator)">
+            <input id="a-no-self-narration" type="checkbox" />
+            <span>Let Narrator describe actions</span>
+          </label>
+        </div>
+
         <div class="context-meter" id="a-ctx-meter">
           <div class="context-meter-head">
             <span>Context Window</span>
@@ -210,7 +226,7 @@
             id="scene-prompt"
             class="scene-textarea"
             rows="2"
-            placeholder="Describe the debate topic or scenario (e.g., Should open-weights AI models be regulated like critical infrastructure?)"
+            placeholder="Describe the debate topic or roleplay scenario..."
           ></textarea>
         </div>
 
@@ -224,7 +240,7 @@
                 <option value="random">Random</option>
               </select>
             </label>
-            <label class="inline-field">
+            <label class="inline-field" title="Number of Model A + Model B debater turns (Narrator actions do not consume this budget)">
               <span>Turns:</span>
               <input id="turn-limit" class="compact-input" type="number" min="1" max="200" value="6" />
             </label>
@@ -275,6 +291,81 @@
             </div>
           </div>
         </div>
+
+        <!-- Collapsible 3rd Model Action Narrator Bar -->
+        <details id="narrator-bar" class="narrator-bar">
+          <summary class="narrator-summary">
+            <span class="narrator-summary-left">
+              <span>🎬 Action Narrator (3rd Model)</span>
+              <span id="narrator-status-pill" class="narrator-pill">Off</span>
+            </span>
+            <span class="field-hint">Configure ▾</span>
+          </summary>
+          <div class="narrator-body">
+            <div class="narrator-grid-top">
+              <label class="toggle-chip narrator-enable-chip">
+                <input id="narrator-enabled" type="checkbox" />
+                <span>Enable</span>
+              </label>
+              <div class="field">
+                <label for="narrator-model">Narrator Model</label>
+                <select id="narrator-model" class="input input-sm"></select>
+              </div>
+              <div class="field">
+                <label for="narrator-label">Label</label>
+                <input id="narrator-label" class="input input-sm" type="text" value="Narrator" placeholder="Narrator" />
+              </div>
+              <div class="field">
+                <label for="narrator-cadence-mode">Action Cadence</label>
+                <select id="narrator-cadence-mode" class="input input-sm">
+                  <option value="every_turn">Every turn (A→Act→B→Act)</option>
+                  <option value="every_n">Every N debater turns</option>
+                  <option value="random_1_to_n">Random 1..N turns</option>
+                </select>
+              </div>
+              <div id="narrator-n-wrap" class="field hidden">
+                <label for="narrator-cadence-n">N Turns</label>
+                <input id="narrator-cadence-n" class="input input-sm" type="number" min="1" max="20" value="3" />
+              </div>
+            </div>
+
+            <div class="narrator-grid-bottom">
+              <div class="field">
+                <label for="narrator-thinking">Thinking</label>
+                <select id="narrator-thinking" class="input input-sm">
+                  <option value="default">Default</option>
+                  <option value="on">On</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+              <div id="narrator-effort-wrap" class="field hidden">
+                <label for="narrator-effort">Effort</label>
+                <select id="narrator-effort" class="input input-sm"></select>
+              </div>
+              <div class="field">
+                <label for="narrator-temp">Temp</label>
+                <input id="narrator-temp" class="input input-sm" type="number" min="0" max="2" step="0.05" value="0.7" />
+              </div>
+              <div class="field">
+                <label for="narrator-max-tokens">Max Tok</label>
+                <input id="narrator-max-tokens" class="input input-sm" type="number" min="32" max="32768" step="64" value="1024" />
+              </div>
+              <div class="field">
+                <label for="narrator-seed">Seed</label>
+                <input id="narrator-seed" class="input input-sm" type="number" step="1" placeholder="Auto" />
+              </div>
+              <div class="field narrator-prompt-field">
+                <label for="narrator-prompt">Custom Narrator Prompt (optional)</label>
+                <input
+                  id="narrator-prompt"
+                  class="input input-sm"
+                  type="text"
+                  placeholder="Blank = default third-person physical action narrator"
+                />
+              </div>
+            </div>
+          </div>
+        </details>
       </section>
 
       <!-- Structured Error / Info Banner -->
@@ -355,6 +446,22 @@
         <div class="field">
           <label for="b-side">Side / Position</label>
           <textarea id="b-side" class="input textarea-sm" rows="3" placeholder="What position should Model B defend?"></textarea>
+        </div>
+
+        <div class="roleplay-rules">
+          <span class="roleplay-rules-title">Dialogue &amp; Roleplay Rules</span>
+          <label class="rule-check" title="Speak directly to the other model only (no audience address or prose)">
+            <input id="b-dialogue-only" type="checkbox" />
+            <span>Talk to other model only</span>
+          </label>
+          <label class="rule-check" title="Do not write internal thoughts or inner monologue into actions or dialogue">
+            <input id="b-no-thoughts" type="checkbox" />
+            <span>No thoughts as actions</span>
+          </label>
+          <label class="rule-check" title="Avoid self-narrating physical actions and outcomes (leave to Narrator)">
+            <input id="b-no-self-narration" type="checkbox" />
+            <span>Let Narrator describe actions</span>
+          </label>
         </div>
 
         <div class="context-meter" id="b-ctx-meter">

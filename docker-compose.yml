@@ -1,0 +1,22 @@
+services:
+  ai-debate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-debate:latest
+    container_name: ai-debate
+    restart: unless-stopped
+    ports:
+      - "${AI_DEBATE_PORT:-8008}:8008"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AI_DEBATE_HOST: 0.0.0.0
+      AI_DEBATE_PORT: 8008
+      AI_DEBATE_DATA_DIR: /app/data
+    volumes:
+      - ai_debate_data:/app/data
+
+volumes:
+  ai_debate_data:

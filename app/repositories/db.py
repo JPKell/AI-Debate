@@ -89,6 +89,14 @@ CREATE TABLE IF NOT EXISTS debates (
     model_b_ctx_loaded INTEGER NULL,
     model_b_ctx_guaranteed INTEGER NULL,
     model_b_ctx_max INTEGER NULL,
+    narrator_enabled INTEGER NOT NULL DEFAULT 0,
+    narrator_config TEXT NOT NULL DEFAULT '{}',
+    narrator_cadence_mode TEXT NOT NULL DEFAULT 'every_turn',
+    narrator_cadence_n INTEGER NOT NULL DEFAULT 1,
+    narrator_turns_until_next INTEGER NULL,
+    narrator_ctx_loaded INTEGER NULL,
+    narrator_ctx_guaranteed INTEGER NULL,
+    narrator_ctx_max INTEGER NULL,
     last_error TEXT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -165,12 +173,21 @@ def get_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
 
 def _migrate_debates_columns(conn: sqlite3.Connection) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(debates)").fetchall()}
-    if "auto_compact_threshold" not in cols:
-        conn.execute(
-            "ALTER TABLE debates ADD COLUMN auto_compact_threshold REAL NOT NULL DEFAULT 0.78"
-        )
-    if "keep_recent_turns" not in cols:
-        conn.execute("ALTER TABLE debates ADD COLUMN keep_recent_turns INTEGER NOT NULL DEFAULT 4")
+    migrations = [
+        ("auto_compact_threshold", "REAL NOT NULL DEFAULT 0.78"),
+        ("keep_recent_turns", "INTEGER NOT NULL DEFAULT 4"),
+        ("narrator_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("narrator_config", "TEXT NOT NULL DEFAULT '{}'"),
+        ("narrator_cadence_mode", "TEXT NOT NULL DEFAULT 'every_turn'"),
+        ("narrator_cadence_n", "INTEGER NOT NULL DEFAULT 1"),
+        ("narrator_turns_until_next", "INTEGER NULL"),
+        ("narrator_ctx_loaded", "INTEGER NULL"),
+        ("narrator_ctx_guaranteed", "INTEGER NULL"),
+        ("narrator_ctx_max", "INTEGER NULL"),
+    ]
+    for col_name, col_def in migrations:
+        if col_name not in cols:
+            conn.execute(f"ALTER TABLE debates ADD COLUMN {col_name} {col_def}")
 
 
 def init_db(db_path: Path) -> None:

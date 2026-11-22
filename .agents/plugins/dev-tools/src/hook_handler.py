@@ -8,13 +8,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import load_config
+from .config import ToolkitConfig, load_config
 from .indexer import reindex_project
-from .observability import log_agent_fallback
+from .observability import log_agent_fallback, log_non_mcp_tool
 
 RAW_PYTEST_RE = re.compile(r"(^|[;&|\s])(python3?\s+-m\s+)?pytest(\s|$)")
 RAW_RUFF_RE = re.compile(r"(^|[;&|\s])ruff\s+(check|format)(\s|$)")
+SEARCH_CMD_RE = re.compile(r"(^|[;&|\s])(grep|rg|ripgrep|find|fd|fdfind|ag|ack)(\s|$)")
 PROTECTED_FILENAMES = {".env", ".env.local", ".env.production", "secrets.json"}
+MCP_TOOL_NAMES = {"call_mcp_tool", "list_resources", "read_resource"}
 
 
 def _read_stdin_payload() -> dict[str, Any]:
@@ -29,6 +31,20 @@ def _read_stdin_payload() -> dict[str, Any]:
 
 def _is_claude_payload(payload: dict[str, Any]) -> bool:
     return "tool_name" in payload or "hook_event_name" in payload
+
+
+def _agent_name(payload: dict[str, Any]) -> str:
+    return "claude" if _is_claude_payload(payload) else "antigravity"
+
+
+def _is_mcp_tool(tool_name: str) -> bool:
+    low = tool_name.strip().lower()
+    return (
+        low in MCP_TOOL_NAMES
+        or low.startswith("mcp__")
+        or low.startswith("mcp_")
+        or low.startswith("dev-tools_")
+    )
 
 
 def _resolve_root_from_payload(payload: dict[str, Any]) -> Path | None:
@@ -62,6 +78,114 @@ def _extract_cmd_arg(args: dict[str, Any]) -> str:
         if isinstance(val, str) and val.strip():
             return val.strip()
     return ""
+
+
+def _extract_target_summary(tool_name: str, args: dict[str, Any]) -> str:
+    path_val = _extract_path_arg(args)
+    if path_val:
+        return path_val
+    cmd_val = _extract_cmd_arg(args)
+    if cmd_val:
+        return cmd_val
+    for key in ("pattern", "query", "url", "Prompt", "Role", "Action", "ToolName"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    if args:
+        safe_keys = sorted(str(k) for k in args)
+        return f"args({', '.join(safe_keys)})"
+    return tool_name
+
+
+def _resolve_relative_path(cfg: ToolkitConfig, path_str: str) -> Path | None:
+    if not path_str:
+        return None
+    try:
+        p = Path(path_str)
+        resolved = p.resolve() if p.is_absolute() else (cfg.project_root / p).resolve()
+        return resolved.relative_to(cfg.project_root)
+    except (ValueError, OSError):
+        return None
+
+
+def _is_indexed_source_path(cfg: ToolkitConfig, rel: Path | None) -> bool:
+    if rel is None:
+        return False
+    posix = rel.as_posix()
+    return rel.suffix in cfg.extensions and any(
+        posix == d or posix.startswith(f"{d}/") for d in cfg.source_dirs
+    )
+
+
+def _suggest_mcp_tool(
+    cfg: ToolkitConfig,
+    tool_name: str,
+    args: dict[str, Any],
+    rel_path: Path | None,
+) -> str | None:
+    if tool_name in {"run_command", "Bash"}:
+        cmd = _extract_cmd_arg(args)
+        if RAW_PYTEST_RE.search(cmd):
+            return "run_tests"
+        if RAW_RUFF_RE.search(cmd):
+            return "lint_and_headers"
+        if SEARCH_CMD_RE.search(cmd):
+            return "lookup_symbol / find_similar"
+        return None
+
+    if tool_name in {"Grep", "Glob", "find_by_name", "grep_search"}:
+        return "lookup_symbol / find_similar"
+
+    if tool_name in {"read_file", "Read"} and rel_path is not None:
+        posix = rel_path.as_posix()
+        if posix in {".agents/RULES.md", ".agents/config.json"}:
+            return "get_conventions"
+        if _is_indexed_source_path(cfg, rel_path):
+            return "lookup_symbol / find_similar"
+    return None
+
+
+def _record_non_mcp(
+    cfg: ToolkitConfig,
+    payload: dict[str, Any],
+    *,
+    hook: str,
+    tool_name: str,
+    args: dict[str, Any],
+    blocked_reason: str | None = None,
+) -> None:
+    if not tool_name or _is_mcp_tool(tool_name):
+        return
+    path_str = _extract_path_arg(args)
+    rel = _resolve_relative_path(cfg, path_str)
+    if rel is not None and (rel.as_posix() == ".agents/state" or rel.as_posix().startswith(".agents/state/")):
+        # Still record blocked attempts to edit .agents/state/, skip routine reads of logs
+        if hook != "pre_tool_blocked":
+            return
+
+    target = _extract_target_summary(tool_name, args)
+    conv_id = payload.get("conversationId") or payload.get("session_id")
+    model_name = payload.get("modelName")
+    step_idx = payload.get("stepIdx") if isinstance(payload.get("stepIdx"), int) else None
+    err_raw = payload.get("error")
+    err_str = str(err_raw) if err_raw else None
+
+    log_non_mcp_tool(
+        cfg.non_mcp_log_path,
+        cfg.usage_log_path,
+        agent=_agent_name(payload),
+        hook=hook,
+        tool_name=tool_name,
+        target=target,
+        args_keys=sorted(str(k) for k in args),
+        conversation_id=str(conv_id) if conv_id else None,
+        model_name=str(model_name) if model_name else None,
+        step_idx=step_idx,
+        error=err_str,
+        is_indexed_source=_is_indexed_source_path(cfg, rel),
+        suggested_mcp_tool=_suggest_mcp_tool(cfg, tool_name, args, rel),
+        blocked_reason=blocked_reason,
+    )
 
 
 def _deny_response(payload: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -99,17 +223,23 @@ def handle_pre_tool(payload: dict[str, Any]) -> dict[str, Any]:
                     rel = path_str
 
                 if rel == ".agents/state" or rel.startswith(".agents/state/"):
-                    return _deny_response(
-                        payload,
+                    reason = (
                         "Blocked by Tool-First guardrail: never hand-edit .agents/state/ index or logs. "
-                        "Use MCP tools (reindex, index_status, tool_metrics) instead.",
+                        "Use MCP tools (reindex, index_status, tool_metrics) instead."
                     )
+                    _record_non_mcp(
+                        cfg, payload, hook="pre_tool_blocked", tool_name=tool_name, args=args, blocked_reason=reason
+                    )
+                    return _deny_response(payload, reason)
                 if Path(rel).name in PROTECTED_FILENAMES:
-                    return _deny_response(
-                        payload,
+                    reason = (
                         f"Blocked by Tool-First guardrail: do not edit secret file '{Path(rel).name}'. "
-                        "Ask the user to update secrets manually.",
+                        "Ask the user to update secrets manually."
                     )
+                    _record_non_mcp(
+                        cfg, payload, hook="pre_tool_blocked", tool_name=tool_name, args=args, blocked_reason=reason
+                    )
+                    return _deny_response(payload, reason)
 
         if tool_name in {"run_command", "Bash"}:
             cmd = _extract_cmd_arg(args)
@@ -118,17 +248,23 @@ def handle_pre_tool(payload: dict[str, Any]) -> dict[str, Any]:
                 return _allow_response(payload)
 
             if RAW_PYTEST_RE.search(cmd):
-                return _deny_response(
-                    payload,
+                reason = (
                     "Blocked by Tool-First guardrail: use MCP tool 'run_tests' instead of shell pytest "
-                    "for compact, machine-readable failure output.",
+                    "for compact, machine-readable failure output."
                 )
+                _record_non_mcp(
+                    cfg, payload, hook="pre_tool_blocked", tool_name=tool_name, args=args, blocked_reason=reason
+                )
+                return _deny_response(payload, reason)
             if RAW_RUFF_RE.search(cmd):
-                return _deny_response(
-                    payload,
+                reason = (
                     "Blocked by Tool-First guardrail: use MCP tool 'lint_and_headers' instead of shell ruff "
-                    "so both Ruff lint and module headers are verified together.",
+                    "so both Ruff lint and module headers are verified together."
                 )
+                _record_non_mcp(
+                    cfg, payload, hook="pre_tool_blocked", tool_name=tool_name, args=args, blocked_reason=reason
+                )
+                return _deny_response(payload, reason)
     except Exception as exc:
         print(f"[dev-tools hook:pre_tool] {exc}", file=sys.stderr)
     return _allow_response(payload)
@@ -147,30 +283,24 @@ def handle_stop(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_post_tool(payload: dict[str, Any]) -> dict[str, Any]:
-    """Fast local AST/header sync after writes; fallback telemetry on reads/shell grep."""
+    """Fast local AST/header sync after writes; log all non-MCP tool usage and fallback telemetry."""
     try:
         cfg = load_config(_resolve_root_from_payload(payload))
         tool_name, args = _extract_tool_info(payload)
 
+        # Log every non-MCP tool invocation to .agents/state/non_mcp_tool_usage.jsonl
+        _record_non_mcp(cfg, payload, hook="post_tool", tool_name=tool_name, args=args)
+
         if tool_name in {"write_file", "edit_file", "Write", "Edit", "MultiEdit"}:
-            path_str = _extract_path_arg(args)
-            if path_str:
-                try:
-                    p = Path(path_str)
-                    resolved = p.resolve() if p.is_absolute() else (cfg.project_root / p).resolve()
-                    rel = resolved.relative_to(cfg.project_root)
-                    if rel.suffix in cfg.extensions and any(
-                        rel.as_posix().startswith(f"{d}/") for d in cfg.source_dirs
-                    ):
-                        # Fast local-only AST/header refresh mid-turn; remote OWG sync runs on Stop
-                        reindex_project(
-                            config=cfg,
-                            full=False,
-                            sync_remote=False,
-                            trigger=f"hook:{tool_name}",
-                        )
-                except ValueError:
-                    pass
+            rel = _resolve_relative_path(cfg, _extract_path_arg(args))
+            if _is_indexed_source_path(cfg, rel):
+                # Fast local-only AST/header refresh mid-turn; remote OWG sync runs on Stop
+                reindex_project(
+                    config=cfg,
+                    full=False,
+                    sync_remote=False,
+                    trigger=f"hook:{tool_name}",
+                )
         elif tool_name in {"read_file", "Read"}:
             target = _extract_path_arg(args)
             if target and ".agents/state" not in target:

@@ -22,6 +22,9 @@
   --accent-b-border: rgba(244, 114, 182, 0.32);
   --accent-mod: #f59e0b;
   --accent-mod-bg: rgba(245, 158, 11, 0.12);
+  --accent-nar: #a78bfa;
+  --accent-nar-bg: rgba(167, 139, 250, 0.11);
+  --accent-nar-border: rgba(167, 139, 250, 0.34);
   --status-ok: #22c55e;
   --status-warn: #f59e0b;
   --status-err: #ef4444;
@@ -52,6 +55,9 @@
   --accent-b-border: rgba(219, 39, 119, 0.28);
   --accent-mod: #d97706;
   --accent-mod-bg: rgba(217, 119, 6, 0.1);
+  --accent-nar: #7c3aed;
+  --accent-nar-bg: rgba(124, 58, 237, 0.08);
+  --accent-nar-border: rgba(124, 58, 237, 0.28);
   --status-ok: #16a34a;
   --status-warn: #d97706;
   --status-err: #dc2626;
@@ -80,6 +86,9 @@
   --accent-b-border: rgba(232, 121, 249, 0.36);
   --accent-mod: #facc15;
   --accent-mod-bg: rgba(250, 204, 21, 0.12);
+  --accent-nar: #c084fc;
+  --accent-nar-bg: rgba(192, 132, 252, 0.12);
+  --accent-nar-border: rgba(192, 132, 252, 0.36);
   --status-ok: #34d399;
   --status-warn: #fbbf24;
   --status-err: #fb7185;
@@ -108,6 +117,9 @@
   --accent-b-border: rgba(159, 18, 57, 0.25);
   --accent-mod: #b45309;
   --accent-mod-bg: rgba(180, 83, 9, 0.11);
+  --accent-nar: #6d28d9;
+  --accent-nar-bg: rgba(109, 40, 217, 0.08);
+  --accent-nar-border: rgba(109, 40, 217, 0.26);
   --status-ok: #15803d;
   --status-warn: #b45309;
   --status-err: #b91c1c;
@@ -136,6 +148,9 @@
   --accent-b-border: rgba(251, 191, 36, 0.34);
   --accent-mod: #60a5fa;
   --accent-mod-bg: rgba(96, 165, 250, 0.12);
+  --accent-nar: #c084fc;
+  --accent-nar-bg: rgba(192, 132, 252, 0.11);
+  --accent-nar-border: rgba(192, 132, 252, 0.34);
   --status-ok: #22c55e;
   --status-warn: #f59e0b;
   --status-err: #f87171;

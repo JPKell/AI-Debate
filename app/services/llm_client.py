@@ -19,7 +19,7 @@ from typing import Any, Literal
 import httpx
 
 from app.errors import UpstreamLLMError
-from app.schemas import ModelInfo, ModelParticipantConfig
+from app.schemas import ModelInfo, ModelParticipantConfig, NarratorConfig
 from app.services.thinking_parser import ThinkingParser
 
 logger = logging.getLogger(__name__)
@@ -365,7 +365,7 @@ class OpenWeightGymClient:
     def _build_chat_payload(
         self,
         *,
-        participant: ModelParticipantConfig,
+        participant: ModelParticipantConfig | NarratorConfig,
         messages: list[dict[str, str]],
         is_adaptor: bool,
         supports_streaming: bool,
@@ -478,7 +478,7 @@ class OpenWeightGymClient:
     async def stream_chat_completion(
         self,
         *,
-        participant: ModelParticipantConfig,
+        participant: ModelParticipantConfig | NarratorConfig,
         messages: list[dict[str, str]],
         trace_id: str | None = None,
         is_adaptor: bool | None = None,

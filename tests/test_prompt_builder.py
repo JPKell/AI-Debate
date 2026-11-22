@@ -1,17 +1,21 @@
 """
-Purpose: Unit tests for prompt composition and A/B role-flipping history builder.
+Purpose: Unit tests for prompt composition, roleplay/dialogue rules, narrator prompting, and A/B role-flipping history builder.
 Role: test
 Patterns: contract-first-test
 Depends on: app.services.prompt_builder, app.schemas
-Exposes: test_compose_system_prompt_includes_style_conviction_side, test_turn_one_opening_message, test_role_flipping_and_thinking_exclusion, test_moderator_interjection_formatting
+Exposes: test_compose_system_prompt_includes_style_conviction_side, test_turn_one_opening_message, test_role_flipping_and_thinking_exclusion, test_moderator_interjection_formatting, test_roleplay_dialogue_constraints_and_narrator_prompts
 Tests: tests/test_prompt_builder.py
-Invariants: Thinking text must never appear in messages sent to either model.
+Invariants: Thinking text must never appear in messages sent to any model (A, B, or Narrator).
 """
 
 from __future__ import annotations
 
-from app.schemas import DebateRecord, MessageRecord, ModelParticipantConfig
-from app.services.prompt_builder import build_messages_for_speaker, compose_system_prompt
+from app.schemas import DebateRecord, MessageRecord, ModelParticipantConfig, NarratorConfig
+from app.services.prompt_builder import (
+    build_messages_for_speaker,
+    compose_narrator_system_prompt,
+    compose_system_prompt,
+)
 
 
 def _make_debate() -> DebateRecord:
@@ -132,3 +136,101 @@ def test_moderator_interjection_formatting() -> None:
     msgs_for_b = build_messages_for_speaker(debate=debate, history=history, speaker="B")
     assert msgs_for_b[-1]["role"] == "user"
     assert "[Moderator]: Address Python PEP 8 specifically." in msgs_for_b[-1]["content"]
+
+
+def test_roleplay_dialogue_constraints_and_narrator_prompts() -> None:
+    debate = DebateRecord(
+        id="deb-rp",
+        title="Tavern Standoff",
+        scene_prompt="Two rival detectives meet in a rain-soaked tavern.",
+        first_speaker="A",
+        resolved_first_speaker="A",
+        status="running",
+        turn_limit=4,
+        narrator_enabled=True,
+        narrator_config=NarratorConfig(model_id="model-narrator", label="Scene Narrator"),
+        narrator_cadence_mode="every_turn",
+        narrator_cadence_n=1,
+        model_a_config=ModelParticipantConfig(
+            model_id="model-a",
+            label="Detective Vance",
+            style="adversarial",
+            conviction="firm",
+            side="Insist the ledger belongs to the precinct.",
+            dialogue_only=True,
+            no_thoughts_as_actions=True,
+            no_self_narration=True,
+        ),
+        model_b_config=ModelParticipantConfig(
+            model_id="model-b",
+            label="Inspector Mara",
+            style="explorative",
+            conviction="balanced",
+            side="Protect the witness list inside the ledger.",
+            dialogue_only=True,
+            no_thoughts_as_actions=True,
+        ),
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+
+    sys_a = compose_system_prompt(
+        participant=debate.model_a_config,
+        opponent_label="Inspector Mara",
+        scene_prompt=debate.scene_prompt,
+        narrator_enabled=True,
+    )
+    assert "directly to 'Inspector Mara' only" in sys_a
+    assert "internal thoughts" in sys_a.lower()
+    assert "narrator" in sys_a.lower()
+
+    nar_sys = compose_narrator_system_prompt(debate)
+    assert "Detective Vance" in nar_sys
+    assert "Inspector Mara" in nar_sys
+    assert "internal thoughts" in nar_sys.lower()
+
+    history = [
+        MessageRecord(
+            id="m1",
+            debate_id="deb-rp",
+            turn_index=1,
+            sender="A",
+            model_id="model-a",
+            content="Put the ledger on the table, Mara.",
+            thinking="SECRET_VANCE_THOUGHT",
+            created_at="2026-01-01T00:00:01Z",
+        ),
+        MessageRecord(
+            id="m2",
+            debate_id="deb-rp",
+            turn_index=2,
+            sender="narrator",
+            model_id="model-narrator",
+            content="Vance leans forward as rain lashes the tavern window.",
+            thinking="SECRET_NARRATOR_THOUGHT",
+            created_at="2026-01-01T00:00:02Z",
+        ),
+        MessageRecord(
+            id="m3",
+            debate_id="deb-rp",
+            turn_index=3,
+            sender="B",
+            model_id="model-b",
+            content="Not until you swear the witness stays anonymous.",
+            thinking="SECRET_MARA_THOUGHT",
+            created_at="2026-01-01T00:00:03Z",
+        ),
+    ]
+
+    # Narrator sees attributed A/B turns as user, its own prior narration as assistant, and zero thinking
+    msgs_nar = build_messages_for_speaker(debate=debate, history=history, speaker="narrator")
+    assert [m["role"] for m in msgs_nar] == ["system", "user", "assistant", "user"]
+    assert "[Detective Vance]: Put the ledger on the table, Mara." in msgs_nar[1]["content"]
+    assert msgs_nar[2]["content"] == "Vance leans forward as rain lashes the tavern window."
+    assert "[Inspector Mara]: Not until you swear the witness stays anonymous." in msgs_nar[3]["content"]
+    assert "SECRET_" not in str(msgs_nar)
+
+    # Debater A sees Narrator message clearly attributed and never sees narrator thinking
+    msgs_a = build_messages_for_speaker(debate=debate, history=history, speaker="A")
+    assert "[Scene Narrator]: Vance leans forward as rain lashes the tavern window." in str(msgs_a)
+    assert "SECRET_" not in str(msgs_a)

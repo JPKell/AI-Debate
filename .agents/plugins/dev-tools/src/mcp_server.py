@@ -184,10 +184,14 @@ def reindex(full: bool = False, sync_remote: bool = True) -> str:
 
 @mcp.tool()
 def tool_metrics(limit: int = 15) -> str:
-    """Return MCP tool usage stats, average payload sizes, and fallback read/grep counts."""
+    """Return MCP tool usage stats, average payload sizes, fallback counts, and non-MCP tool usage summary."""
 
     def _exec(cfg: ToolkitConfig) -> dict[str, Any]:
-        return summarize_metrics(cfg.usage_log_path, recent_limit=limit)
+        return summarize_metrics(
+            cfg.usage_log_path,
+            recent_limit=limit,
+            non_mcp_log_path=cfg.non_mcp_log_path,
+        )
 
     return _run_observed("tool_metrics", {"limit": limit}, _exec)
 

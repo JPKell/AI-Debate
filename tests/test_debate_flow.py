@@ -3,7 +3,7 @@ Purpose: End-to-end tests for DebateManager orchestration, global single-debate 
 Role: test
 Patterns: contract-first-test, service-layer, repository-pattern, streaming-pipeline
 Depends on: app.repositories.db, app.repositories.debates_repo, app.services.llm_client, app.services.debate_manager, app.schemas, httpx
-Exposes: test_end_to_end_two_model_debate_and_limits, test_global_single_debate_lock_conflict, test_fork_swap_sides_and_moderator_interjection, test_pause_resume_continue_and_mid_debate_reconnect_snapshot, test_cross_user_409_redaction_and_export_filters, test_upstream_404_and_503_turnstile_handling
+Exposes: test_end_to_end_two_model_debate_and_limits, test_global_single_debate_lock_conflict, test_fork_swap_sides_and_moderator_interjection, test_pause_resume_continue_and_mid_debate_reconnect_snapshot, test_cross_user_409_redaction_and_export_filters, test_upstream_404_and_503_turnstile_handling, test_narrator_every_turn_every_n_and_random_cadence
 Tests: tests/test_debate_flow.py
 Invariants: Uses isolated temporary SQLite databases and mocked openWeightGym SSE responses.
 """
@@ -463,4 +463,122 @@ async def test_upstream_404_and_503_turnstile_handling(tmp_path: Path) -> None:
     assert d2_after.last_error is not None
     assert "15s" in d2_after.last_error
     assert "compute-off" in d2_after.last_error
+
+
+@pytest.mark.asyncio
+async def test_narrator_every_turn_every_n_and_random_cadence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.schemas import NarratorConfig
+
+    db_path = tmp_path / "narrator.db"
+    init_db(db_path)
+    repo = DebatesRepository(db_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"object": "list", "data": []})
+        body = json.loads(request.content.decode())
+        model = body["model"]
+        return _sse_response(model, reply=f"Line from {model}.")
+
+    client = OpenWeightGymClient(
+        base_url="http://mock-owg:8442",
+        api_key="test-key",
+        transport=httpx.MockTransport(handler),
+    )
+    manager = DebateManager(repo=repo, llm_client=client)
+
+    # 1. every_turn cadence: turn_limit=3 debater turns -> A, narrator, B, narrator, A, narrator
+    d_every = repo.create_debate(
+        DebateCreate(
+            title="Every Turn Narration",
+            scene_prompt="Roleplay duel",
+            first_speaker="A",
+            turn_limit=3,
+            narrator_enabled=True,
+            narrator_config=NarratorConfig(model_id="m-narrator", label="Action Narrator"),
+            narrator_cadence_mode="every_turn",
+            narrator_cadence_n=1,
+            model_a_config=ModelParticipantConfig(model_id="m-a", dialogue_only=True, no_thoughts_as_actions=True),
+            model_b_config=ModelParticipantConfig(model_id="m-b", dialogue_only=True, no_thoughts_as_actions=True),
+        )
+    )
+    await manager.start_debate(d_every.id)
+    await manager.wait_for_idle(timeout=5.0)
+    assert repo.require_debate(d_every.id).status == "limit_reached"
+    assert [m.sender for m in repo.list_messages(d_every.id)] == [
+        "A",
+        "narrator",
+        "B",
+        "narrator",
+        "A",
+        "narrator",
+    ]
+
+    # 2. every_n (n=2): A, B, narrator, A, B, narrator
+    d_every2 = repo.create_debate(
+        DebateCreate(
+            title="Every 2 Turns Narration",
+            scene_prompt="Roleplay duel",
+            first_speaker="A",
+            turn_limit=4,
+            narrator_enabled=True,
+            narrator_config=NarratorConfig(model_id="m-narrator"),
+            narrator_cadence_mode="every_n",
+            narrator_cadence_n=2,
+            model_a_config=ModelParticipantConfig(model_id="m-a"),
+            model_b_config=ModelParticipantConfig(model_id="m-b"),
+        )
+    )
+    await manager.start_debate(d_every2.id)
+    await manager.wait_for_idle(timeout=5.0)
+    assert [m.sender for m in repo.list_messages(d_every2.id)] == [
+        "A",
+        "B",
+        "narrator",
+        "A",
+        "B",
+        "narrator",
+    ]
+
+    # 3. random_1_to_n (n=3): deterministic sequence of rolls [2, 1, 3]
+    rolls = iter([2, 1, 3])
+    monkeypatch.setattr("app.services.debate_manager.random.randint", lambda lo, hi: next(rolls))
+
+    d_rand = repo.create_debate(
+        DebateCreate(
+            title="Random Cadence Narration",
+            scene_prompt="Roleplay duel",
+            first_speaker="A",
+            turn_limit=4,
+            narrator_enabled=True,
+            narrator_config=NarratorConfig(model_id="m-narrator"),
+            narrator_cadence_mode="random_1_to_n",
+            narrator_cadence_n=3,
+            model_a_config=ModelParticipantConfig(model_id="m-a"),
+            model_b_config=ModelParticipantConfig(model_id="m-b"),
+        )
+    )
+    await manager.start_debate(d_rand.id)
+    await manager.wait_for_idle(timeout=5.0)
+    # Roll 1 = 2 -> A, B, narrator; Roll 2 = 1 -> A, narrator; Roll 3 = 3 -> B (limit=4 reached before next narration)
+    assert [m.sender for m in repo.list_messages(d_rand.id)] == [
+        "A",
+        "B",
+        "narrator",
+        "A",
+        "narrator",
+        "B",
+    ]
+
+    # Fork preserves narrator settings & roleplay toggles
+    forked = repo.fork_debate(d_every.id, swap_sides=False)
+    assert forked.narrator_enabled is True
+    assert forked.narrator_config.model_id == "m-narrator"
+    assert forked.narrator_cadence_mode == "every_turn"
+    assert forked.model_a_config.dialogue_only is True
+    assert forked.model_a_config.no_thoughts_as_actions is True
+    await client.aclose()
 

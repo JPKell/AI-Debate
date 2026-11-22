@@ -81,8 +81,8 @@ body {
   font-weight: 600;
   padding: 4px 8px;
   border-radius: 6px;
-  width: 220px;
-  max-width: 28vw;
+  width: clamp(130px, 16vw, 220px);
+  min-width: 100px;
 }
 
 .title-input:hover,
@@ -380,7 +380,7 @@ body {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  flex: 1;
+  flex: 0 0 auto;
 }
 
 .field label {
@@ -389,11 +389,17 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .field-row {
   display: flex;
   gap: 8px;
+  align-items: flex-end;
+}
+
+.field-row > .field {
+  flex: 1 1 0;
 }
 
 .field-hint {
@@ -556,6 +562,12 @@ body {
   padding: 6px 12px;
   background: var(--bg-elevated);
   color: var(--text-primary);
+  white-space: nowrap;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
 .btn:hover:not(:disabled) {
@@ -1245,5 +1257,236 @@ body {
   display: inline-flex;
   align-items: center;
 }
+
+/* Roleplay / Dialogue Checkboxes */
+.roleplay-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.roleplay-rules-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.rule-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 3rd Model Action Narrator Collapsible Bar */
+.narrator-bar {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.narrator-bar[open] {
+  border-color: var(--accent-nar-border);
+}
+
+.narrator-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.narrator-summary-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.narrator-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+}
+
+.narrator-pill.enabled {
+  background: var(--accent-nar-bg);
+  border-color: var(--accent-nar-border);
+  color: var(--accent-nar);
+}
+
+.narrator-body {
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Narrator Action Cards in Chat Feed */
+.msg-row.msg-narrator {
+  align-self: center;
+  max-width: 78%;
+  width: 100%;
+}
+
+.msg-narrator .msg-card {
+  background: var(--accent-nar-bg);
+  border-color: var(--accent-nar-border);
+  border-style: dashed;
+}
+
+.msg-narrator .msg-sender {
+  color: var(--accent-nar);
+}
+
+.msg-narrator .msg-content {
+  font-style: italic;
+}
+
+.debate-item.active .debate-delete-btn {
+  opacity: 1;
+}
+
+/* Narrator Bar Responsive Rows (flex-based so hidden optional fields never shift columns) */
+.narrator-grid-top,
+.narrator-grid-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.narrator-grid-top > .field {
+  flex: 1 1 135px;
+}
+
+.narrator-grid-top > #narrator-n-wrap {
+  flex: 0 0 74px;
+}
+
+.narrator-enable-chip {
+  height: 31px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.narrator-grid-bottom > .field {
+  flex: 0 1 88px;
+  min-width: 74px;
+}
+
+.narrator-grid-bottom > .narrator-prompt-field {
+  flex: 2 1 200px;
+}
+
+.narrator-grid-bottom > .hidden,
+.narrator-grid-top > .hidden {
+  display: none !important;
+}
+
+/* Narrow Desktop (1100px–1380px): keep arena spacious */
+@media (min-width: 1100px) and (max-width: 1380px) {
+  .model-panel {
+    width: 256px;
+  }
+
+  .history-drawer {
+    width: 215px;
+  }
+}
+
+/* Tablet & Mobile Responsive Topbar + Narrator Grids (< 1100px) */
+@media (max-width: 1099px) {
+  .topbar {
+    flex-wrap: wrap;
+    padding: 7px 10px;
+    gap: 6px 8px;
+  }
+
+  .topbar-left {
+    flex: 1 1 100%;
+    gap: 6px;
+  }
+
+  .topbar-right {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-start;
+  }
+
+  .title-input {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .user-pill {
+    display: none;
+  }
+
+  .endpoint-pill {
+    padding: 3px 8px;
+    font-size: 11px;
+  }
+
+  .mobile-panel-btns {
+    margin-left: auto;
+  }
+
+  .narrator-grid-top,
+  .narrator-grid-bottom {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .narrator-prompt-field {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 560px) {
+  .brand-name {
+    display: none;
+  }
+
+  .endpoint-pill {
+    display: none;
+  }
+
+  .scene-bar {
+    padding: 8px 10px;
+  }
+
+  .chat-feed {
+    padding: 12px 10px;
+  }
+
+  .narrator-summary {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+}
+
+
 
 

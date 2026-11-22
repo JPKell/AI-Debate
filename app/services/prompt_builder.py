@@ -1,11 +1,11 @@
 """
-Purpose: Compose debate system prompts from Style, Conviction, Side, and Scene, and build role-flipped chat histories.
+Purpose: Compose debate/roleplay system prompts (including dialogue constraints and 3rd Action Narrator) and build role-flipped chat histories.
 Role: util
 Patterns: none
 Depends on: app.schemas
-Exposes: STYLE_PRESETS, CONVICTION_LEVELS, compose_system_prompt, build_messages_for_speaker
+Exposes: STYLE_PRESETS, CONVICTION_LEVELS, compose_system_prompt, compose_narrator_system_prompt, build_messages_for_narrator, build_messages_for_speaker
 Tests: tests/test_prompt_builder.py
-Invariants: Never includes any model's private thinking text in the conversation history sent to either model.
+Invariants: Never includes any model's private thinking text in the conversation history sent to any model (A, B, or Narrator).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from app.schemas import (
     DebateRecord,
     MessageRecord,
     ModelParticipantConfig,
-    ResolvedSpeaker,
+    TurnSpeaker,
 )
 
 STYLE_PRESETS: dict[str, dict[str, str]] = {
@@ -99,6 +99,7 @@ def compose_system_prompt(
     participant: ModelParticipantConfig,
     opponent_label: str,
     scene_prompt: str,
+    narrator_enabled: bool = False,
 ) -> str:
     """Compose the full system prompt for one debating model.
 
@@ -106,13 +107,33 @@ def compose_system_prompt(
         participant: Configuration for the speaking participant.
         opponent_label: Display label of the opposing participant.
         scene_prompt: Shared topic / framing for the debate.
+        narrator_enabled: Whether the 3rd Action Narrator model is active in this debate.
     Returns:
         System prompt string ready for the LLM `system` message.
     Side effects:
         None.
     """
+    rules: list[str] = []
+    if participant.dialogue_only:
+        rules.append(
+            f"- Direct dialogue only: speak directly to '{opponent_label}' only. "
+            "Do not address an audience, moderator, or narrator, and do not write third-person prose or stage directions."
+        )
+    if participant.no_thoughts_as_actions:
+        rules.append(
+            "- No internal thoughts in output: never express inner monologue, private thoughts, or unspoken feelings "
+            "as actions, italics, or dialogue. Output only observable spoken words or outward behavior."
+        )
+    if participant.no_self_narration or narrator_enabled:
+        rules.append(
+            "- Do not narrate physical actions, scene changes, or outcomes for yourself or others; "
+            "a separate Action Narrator handles scene actions and consequences. Focus on what you say."
+        )
+
     if participant.system_prompt_override.strip():
         base = participant.system_prompt_override.strip()
+        if rules:
+            base = f"{base}\n\nInteraction Rules:\n" + "\n".join(rules)
         if scene_prompt.strip() and scene_prompt.strip() not in base:
             return f"{base}\n\nDebate Scene / Topic:\n{scene_prompt.strip()}"
         return base
@@ -127,8 +148,13 @@ def compose_system_prompt(
         participant.conviction, CONVICTION_LEVELS["firm"]
     )["instruction"]
 
+    opening_line = (
+        f"You are '{my_label}', speaking directly to '{opponent_label}' in a live back-and-forth exchange."
+        if participant.dialogue_only
+        else f"You are '{my_label}', participating in a live back-and-forth debate against '{opponent_label}'."
+    )
     parts: list[str] = [
-        f"You are '{my_label}', participating in a live back-and-forth debate against '{opponent_label}'.",
+        opening_line,
         "Respond directly to your opponent in clear, substantive, well-structured prose. "
         "Keep each turn focused and engaging (avoid repeating earlier points verbatim).",
     ]
@@ -137,24 +163,137 @@ def compose_system_prompt(
     parts.append(conviction_text)
     if participant.side.strip():
         parts.append(f"Your Assigned Side / Position:\n{participant.side.strip()}")
+    if rules:
+        parts.append("Interaction Rules:\n" + "\n".join(rules))
     if scene_prompt.strip():
         parts.append(f"Debate Scene / Topic:\n{scene_prompt.strip()}")
     return "\n\n".join(parts)
+
+
+def compose_narrator_system_prompt(debate: DebateRecord) -> str:
+    """Compose the system prompt for the 3rd Action Narrator model.
+
+    Parameters:
+        debate: DebateRecord containing participant labels, narrator config, and scene prompt.
+    Returns:
+        System prompt string guiding the Action Narrator.
+    Side effects:
+        None.
+    """
+    label_a = debate.model_a_config.effective_label("Model A")
+    label_b = debate.model_b_config.effective_label("Model B")
+    narrator_label = debate.narrator_config.effective_label("Narrator")
+
+    custom = debate.narrator_config.system_prompt.strip()
+    if custom:
+        parts = [custom]
+    else:
+        parts = [
+            f"You are '{narrator_label}', an impartial third-person Action Narrator observing a live scene between "
+            f"'{label_a}' and '{label_b}'.",
+            "Narrate the physical actions, gestures, posture, environmental details, and immediate consequences "
+            "triggered by the most recent exchange.",
+            "Rules:\n"
+            f"- Never write spoken dialogue on behalf of '{label_a}' or '{label_b}'.\n"
+            "- Never invent or reveal internal thoughts, secret motives, or inner monologues — describe only "
+            "observable physical actions and scene events.\n"
+            "- Keep each narration vivid, grounded, and concise (1 short paragraph).",
+        ]
+
+    if debate.scene_prompt.strip():
+        parts.append(f"Scene / Setting:\n{debate.scene_prompt.strip()}")
+    return "\n\n".join(parts)
+
+
+def build_messages_for_narrator(
+    *,
+    debate: DebateRecord,
+    history: list[MessageRecord],
+    latest_compaction: CompactionRecord | None = None,
+) -> list[dict[str, str]]:
+    """Build OpenAI chat `messages` list for the 3rd Action Narrator model.
+
+    Parameters:
+        debate: Current DebateRecord.
+        history: Ordered list of prior transcript messages.
+        latest_compaction: Optional latest compaction summary.
+    Returns:
+        List of OpenAI-compatible message dicts excluding all private thinking text.
+    Side effects:
+        None.
+    """
+    label_a = debate.model_a_config.effective_label("Model A")
+    label_b = debate.model_b_config.effective_label("Model B")
+    system_prompt = compose_narrator_system_prompt(debate)
+
+    effective_history = history
+    if latest_compaction is not None:
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            f"Summary of Earlier Scene Turns (compacted):\n{latest_compaction.summary_text.strip()}"
+        )
+        cut_idx = next(
+            (i for i, m in enumerate(history) if m.id == latest_compaction.through_message_id),
+            None,
+        )
+        if cut_idx is not None:
+            effective_history = history[cut_idx + 1 :]
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+
+    for msg in effective_history:
+        text = msg.content.strip()
+        if not text:
+            continue
+        if msg.sender == "narrator":
+            role = "assistant"
+            content = text
+        elif msg.sender == "A":
+            role = "user"
+            content = f"[{label_a}]: {text}"
+        elif msg.sender == "B":
+            role = "user"
+            content = f"[{label_b}]: {text}"
+        else:
+            role = "user"
+            content = f"[Moderator]: {text}"
+
+        if len(messages) == 1 and role == "assistant":
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Set the opening physical beat of the scene.",
+                }
+            )
+
+        if messages[-1]["role"] == role and role in ("user", "assistant"):
+            messages[-1]["content"] = f"{messages[-1]['content']}\n\n{content}"
+        else:
+            messages.append({"role": role, "content": content})
+
+    if messages[-1]["role"] != "user":
+        messages.append(
+            {
+                "role": "user",
+                "content": "Narrate the observable physical actions and scene beat that follow.",
+            }
+        )
+    return messages
 
 
 def build_messages_for_speaker(
     *,
     debate: DebateRecord,
     history: list[MessageRecord],
-    speaker: ResolvedSpeaker,
+    speaker: TurnSpeaker,
     latest_compaction: CompactionRecord | None = None,
 ) -> list[dict[str, str]]:
     """Build OpenAI chat `messages` list for the upcoming speaker with strict role-flipping.
 
     Parameters:
-        debate: Debate record containing both participant configs and scene prompt.
+        debate: Debate record containing participant configs, narrator config, and scene prompt.
         history: Ordered list of prior transcript messages.
-        speaker: Which participant ('A' or 'B') is about to speak.
+        speaker: Which participant ('A', 'B', or 'narrator') is about to speak.
         latest_compaction: Optional latest compaction summary; when set, only messages after
             `through_message_id` are sent verbatim while earlier turns are represented by the summary.
     Returns:
@@ -162,14 +301,23 @@ def build_messages_for_speaker(
     Side effects:
         None.
     """
+    if speaker == "narrator":
+        return build_messages_for_narrator(
+            debate=debate,
+            history=history,
+            latest_compaction=latest_compaction,
+        )
+
     participant = debate.model_a_config if speaker == "A" else debate.model_b_config
     opponent = debate.model_b_config if speaker == "A" else debate.model_a_config
     opponent_label = opponent.effective_label("Model B" if speaker == "A" else "Model A")
+    narrator_label = debate.narrator_config.effective_label("Narrator")
 
     system_prompt = compose_system_prompt(
         participant=participant,
         opponent_label=opponent_label,
         scene_prompt=debate.scene_prompt,
+        narrator_enabled=debate.narrator_enabled,
     )
 
     effective_history = history
@@ -194,8 +342,12 @@ def build_messages_for_speaker(
         opening = (
             "Continue the debate from the summary above, presenting your next argument clearly."
             if latest_compaction is not None
-            else f"The debate is now beginning{topic_hint}. Please deliver your opening statement "
-            "clearly establishing your position."
+            else (
+                f"The exchange with '{opponent_label}' is beginning{topic_hint}. Deliver your opening line directly to '{opponent_label}'."
+                if participant.dialogue_only
+                else f"The debate is now beginning{topic_hint}. Please deliver your opening statement "
+                "clearly establishing your position."
+            )
         )
         messages.append({"role": "user", "content": opening})
         return messages
@@ -211,6 +363,9 @@ def build_messages_for_speaker(
         elif msg.sender == "moderator":
             role = "user"
             content = f"[Moderator]: {text}"
+        elif msg.sender == "narrator":
+            role = "user"
+            content = f"[{narrator_label}]: {text}"
         else:
             role = "user"
             content = text

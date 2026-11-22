@@ -11,7 +11,7 @@ from typing import Any
 from src.config import load_config
 from src.graph_store import GraphStore
 from src.headers import parse_and_validate_header
-from src.hook_handler import handle_pre_tool
+from src.hook_handler import handle_post_tool, handle_pre_tool
 from src.indexer import get_index_status, reindex_project
 from src.observability import log_agent_fallback, log_mcp_call, summarize_metrics
 from src.owg_client import load_owg_settings
@@ -325,3 +325,112 @@ def test_observability_and_stop_hook(tmp_path: Path) -> None:
     assert json.loads(proc.stdout.strip()) == {"decision": "allow"}
     # AST/header graph must still be populated even if OWG is unconfigured in temp repo
     assert GraphStore(cfg.db_path).stats()["files"] == 4
+
+
+def test_non_mcp_tool_usage_logging_and_metrics(tmp_path: Path) -> None:
+    repo = _make_sample_repo(tmp_path)
+    cfg = load_config(repo)
+
+    # Seed one MCP call so correlation works
+    log_mcp_call(cfg.usage_log_path, "lookup_symbol", {"symbol": "BillingService"}, 512, 5.0, ok=True)
+
+    # 1. Non-MCP read of an indexed source file -> logged with suggested_mcp_tool
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "conversationId": "conv-1",
+            "modelName": "gemini",
+            "stepIdx": 3,
+            "toolCall": {"name": "read_file", "args": {"Path": str(repo / "app/calc_service.py")}},
+        }
+    )
+
+    # 2. Non-MCP read of RULES.md -> suggests get_conventions
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "toolCall": {"name": "read_file", "args": {"Path": str(repo / ".agents/RULES.md")}},
+        }
+    )
+
+    # 3. Non-MCP shell grep -> suggests lookup_symbol / find_similar; git status -> no suggestion
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "rg BillingService app/"}},
+        }
+    )
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "git status"}},
+        }
+    )
+
+    # 4. Non-MCP search_web -> logged even though not in the old 4-tool matcher
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "toolCall": {"name": "search_web", "args": {"query": "fastapi lifespan"}},
+        }
+    )
+
+    # 5. MCP tools must NOT be logged in non_mcp_tool_usage.jsonl
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "toolCall": {"name": "call_mcp_tool", "args": {"ToolName": "run_tests"}},
+        }
+    )
+    handle_post_tool(
+        {
+            "cwd": str(repo),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "mcp__project-dev__run_tests",
+            "tool_input": {},
+        }
+    )
+
+    # 6. Blocked PreToolUse attempt (raw pytest) IS logged as pre_tool_blocked
+    res_block = handle_pre_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "toolCall": {"name": "run_command", "args": {"CommandLine": "pytest tests/"}},
+        }
+    )
+    assert res_block["decision"] == "deny"
+
+    lines = cfg.non_mcp_log_path.read_text(encoding="utf-8").splitlines()
+    records = [json.loads(ln) for ln in lines]
+    assert len(records) == 6
+    assert all(r["tool"] not in {"call_mcp_tool", "mcp__project-dev__run_tests"} for r in records)
+
+    assert records[0]["tool"] == "read_file"
+    assert records[0]["is_indexed_source"] is True
+    assert records[0]["suggested_mcp_tool"] == "lookup_symbol / find_similar"
+    assert records[0]["conversation_id"] == "conv-1"
+    assert records[0]["followed_mcp_tool"] == "lookup_symbol"
+
+    assert records[1]["suggested_mcp_tool"] == "get_conventions"
+    assert records[2]["suggested_mcp_tool"] == "lookup_symbol / find_similar"
+    assert records[3]["suggested_mcp_tool"] is None
+    assert records[4]["tool"] == "search_web"
+    assert records[5]["hook"] == "pre_tool_blocked"
+    assert records[5]["suggested_mcp_tool"] == "run_tests"
+    assert records[5]["blocked_reason"]
+
+    metrics = summarize_metrics(
+        cfg.usage_log_path,
+        recent_limit=10,
+        non_mcp_log_path=cfg.non_mcp_log_path,
+    )
+    non_mcp = metrics["non_mcp_summary"]
+    assert non_mcp["total_non_mcp_calls"] == 6
+    assert non_mcp["blocked_attempts"] == 1
+    assert non_mcp["mcp_opportunity_count"] == 4
+    assert non_mcp["by_tool"]["run_command"] == 3
+    assert non_mcp["by_tool"]["read_file"] == 2
+    assert non_mcp["by_tool"]["search_web"] == 1
+    assert non_mcp["by_suggested_mcp"]["run_tests"] == 1
+    assert non_mcp["by_suggested_mcp"]["get_conventions"] == 1
+    assert non_mcp["mcp_share_pct"] == 14.3
