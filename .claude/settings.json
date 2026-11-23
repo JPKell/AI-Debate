@@ -1,4 +1,15 @@
 {
+  "enabledMcpjsonServers": [
+    "project-dev"
+  ],
+  "env": {
+    "ENABLE_TOOL_SEARCH": "false"
+  },
+  "permissions": {
+    "allow": [
+      "mcp__project-dev__*"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {

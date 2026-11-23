@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
 
@@ -37,6 +38,8 @@ def reindex_project(
     sync_remote: bool = True,
     trigger: str = "manual",
     owg_client: OWGClient | None = None,
+    max_remote_summaries: int | None = None,
+    summary_workers: int = 4,
 ) -> dict[str, Any]:
     """Incrementally (or fully) index source files into the SQLite knowledge graph.
 
@@ -93,6 +96,7 @@ def reindex_project(
     store.delete_files(stale_deleted)
 
     summarized_files: list[str] = []
+    deferred_summaries = 0
     embedded_files: list[str] = []
     remote_errors: list[str] = []
     summary_model_used = ""
@@ -108,35 +112,74 @@ def reindex_project(
         all_files = store.get_all_files()
         max_chars = int(cfg.summaries.get("max_source_chars", 8000))
 
-        # 1. Generate OpenWeightGym summaries only for files whose content hash changed
+        # 1. Generate OpenWeightGym summaries concurrently for files whose content hash changed
         need_summary = [f for f in all_files if full or f["summary_hash"] != f["content_hash"]]
-        for f in need_summary:
-            src = sources_by_path.get(f["path"], "")
+        if max_remote_summaries is not None and len(need_summary) > max_remote_summaries:
+            deferred_summaries = len(need_summary) - max_remote_summaries
+            summary_batch = need_summary[:max_remote_summaries]
+        else:
+            summary_batch = need_summary
+
+        can_summarize = True
+        if summary_batch and hasattr(client, "resolve_summary_model"):
             try:
-                model_id, summary_text = client.summarize_module(
-                    rel_path=f["path"],
-                    role=f["role"],
-                    patterns=f["patterns"],
+                client.resolve_summary_model()
+            except OWGError as exc:
+                remote_errors.append(f"summary(init): {exc}")
+                can_summarize = False
+            except Exception as exc:
+                remote_errors.append(f"summary(init): {exc}")
+                can_summarize = False
+
+        if summary_batch and can_summarize:
+            workers = max(1, min(summary_workers, len(summary_batch)))
+
+            def _summarize_one(file_row: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+                src = sources_by_path.get(file_row["path"], "")
+                m_id, s_text = client.summarize_module(
+                    rel_path=file_row["path"],
+                    role=file_row["role"],
+                    patterns=file_row["patterns"],
                     source=src,
                     max_source_chars=max_chars,
                     trace=f"kg-{trigger}",
                 )
-                summary_model_used = model_id
-                store.update_summary(
-                    rel_path=f["path"],
-                    summary=summary_text,
-                    summary_hash=f["content_hash"],
-                    summary_provider=f"openweightgym:{model_id}",
-                )
-                summarized_files.append(f["path"])
-            except OWGError as exc:
-                remote_errors.append(f"summary({f['path']}): {exc}")
-                # If API is unreachable/unconfigured, stop hammering it for remaining files
-                if exc.status_code in (None, 401, 403):
-                    break
-            except Exception as exc:
-                remote_errors.append(f"summary({f['path']}): {exc}")
-                break
+                return file_row, m_id, s_text
+
+            if workers == 1:
+                for f in summary_batch:
+                    try:
+                        _, model_id, summary_text = _summarize_one(f)
+                        summary_model_used = model_id
+                        store.update_summary(
+                            rel_path=f["path"],
+                            summary=summary_text,
+                            summary_hash=f["content_hash"],
+                            summary_provider=f"openweightgym:{model_id}",
+                        )
+                        summarized_files.append(f["path"])
+                    except Exception as exc:
+                        remote_errors.append(f"summary({f['path']}): {exc}")
+                        if isinstance(exc, OWGError) and exc.status_code in (None, 401, 403):
+                            break
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {pool.submit(_summarize_one, f): f for f in summary_batch}
+                    for fut in as_completed(futures):
+                        f = futures[fut]
+                        try:
+                            _, model_id, summary_text = fut.result()
+                            summary_model_used = model_id
+                            store.update_summary(
+                                rel_path=f["path"],
+                                summary=summary_text,
+                                summary_hash=f["content_hash"],
+                                summary_provider=f"openweightgym:{model_id}",
+                            )
+                            summarized_files.append(f["path"])
+                        except Exception as exc:
+                            remote_errors.append(f"summary({f['path']}): {exc}")
+                summarized_files.sort()
 
         # 2. Generate OpenWeightGym embeddings in one batch for stale/missing vectors
         all_files = store.get_all_files()
@@ -184,6 +227,7 @@ def reindex_project(
         "skipped_unchanged": skipped_files,
         "deleted_files": stale_deleted,
         "summarized_files": summarized_files,
+        "deferred_summaries": deferred_summaries,
         "embedded_files": embedded_files,
         "summary_model": summary_model_used,
         "embedding_model": embedding_model_used,

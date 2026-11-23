@@ -13,15 +13,17 @@ AI-Debate is a self-hosted Python web app (FastAPI + SQLite + vanilla JS/CSS) th
 - Re-index knowledge graph: use MCP `reindex` (also runs automatically after every turn via hook)
 
 ## Workflow
-1. Call `get_conventions` for the area, role, or pattern you are touching.
-2. Call `find_similar` before creating any new module and match the closest existing structure.
-3. Call `lookup_symbol` before changing an existing function, class, or interface.
-4. Write or update tests first.
-5. Write code with a valid module header (see Formats and `.agents/RULES.md`).
-6. Run `run_tests` and `lint_and_headers` until clean.
-7. Commit when ready; the post-turn hook (and optional git post-commit hook) keeps the knowledge graph fresh.
+1. Call `repo_map` to orient yourself on the codebase before broad file reads or shell `find`/`ls`.
+2. Call `get_conventions` for the area, role, or pattern you are touching.
+3. Call `find_similar` before creating any new module and match the closest existing structure.
+4. Call `lookup_symbol` before changing an existing function, class, or interface.
+5. Write or update tests first.
+6. Write code with a valid module header (see Formats and `.agents/RULES.md`).
+7. Run `run_tests` and `lint_and_headers` until clean.
+8. Commit when ready; the post-turn hook (and optional git post-commit hook) keeps the knowledge graph fresh.
 
-## Tools (use before reading files or running shell commands)
+## Tools (MCP server `project-dev` / `dev-tools_project-dev` — use before reading files or running shell commands)
+- Orienting on modules/architecture -> `repo_map` (offline SQLite overview; optional `role`, `scope`, `include_summaries`).
 - New file or feature -> `find_similar` to find matching modules and copy conventions.
 - Unfamiliar area or pattern -> `get_conventions`.
 - Editing a function, class, or import -> `lookup_symbol` for definition, callers, callees, and tests.

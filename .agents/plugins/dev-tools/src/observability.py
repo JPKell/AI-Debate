@@ -60,24 +60,30 @@ def _last_mcp_call(log_path: Path) -> dict[str, Any] | None:
     return None
 
 
+def recent_mcp_call(
+    log_path: Path,
+    max_age_seconds: float = 120.0,
+) -> tuple[str | None, float | None]:
+    """Return (tool_name, seconds_since) if an MCP call occurred within max_age_seconds."""
+    prev = _last_mcp_call(log_path)
+    if prev and "ts" in prev:
+        try:
+            prev_ts = datetime.fromisoformat(prev["ts"])
+            delta = (_now() - prev_ts).total_seconds()
+            if 0 <= delta <= max_age_seconds:
+                return prev.get("tool"), round(delta, 2)
+        except ValueError:
+            pass
+    return None, None
+
+
 def log_agent_fallback(
     log_path: Path,
     tool_name: str,
     target: str,
 ) -> None:
     """Record read_file or shell grep/find calls and correlate with recent MCP calls."""
-    prev = _last_mcp_call(log_path)
-    followed_mcp: str | None = None
-    seconds_since: float | None = None
-    if prev and "ts" in prev:
-        try:
-            prev_ts = datetime.fromisoformat(prev["ts"])
-            delta = (_now() - prev_ts).total_seconds()
-            if 0 <= delta <= 120:
-                followed_mcp = prev.get("tool")
-                seconds_since = round(delta, 2)
-        except ValueError:
-            pass
+    followed_mcp, seconds_since = recent_mcp_call(log_path)
 
     append_event(
         log_path,
@@ -109,18 +115,7 @@ def log_non_mcp_tool(
     blocked_reason: str | None = None,
 ) -> None:
     """Record every non-MCP tool invocation (or blocked attempt) for MCP-adoption auditing."""
-    prev = _last_mcp_call(mcp_log_path)
-    followed_mcp: str | None = None
-    seconds_since: float | None = None
-    if prev and "ts" in prev:
-        try:
-            prev_ts = datetime.fromisoformat(prev["ts"])
-            delta = (_now() - prev_ts).total_seconds()
-            if 0 <= delta <= 120:
-                followed_mcp = prev.get("tool")
-                seconds_since = round(delta, 2)
-        except ValueError:
-            pass
+    followed_mcp, seconds_since = recent_mcp_call(mcp_log_path)
 
     append_event(
         non_mcp_log_path,

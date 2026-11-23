@@ -377,19 +377,29 @@ class GraphStore:
             ).fetchall()
 
             def_files = {d["file_path"] for d in definitions}
-            def_qnames = {d["qualified_name"] for d in definitions}
-
             callees: list[dict[str, Any]] = []
-            if def_qnames:
-                placeholders = ",".join("?" for _ in def_qnames)
+            if definitions:
+                clauses: list[str] = []
+                params: list[str] = []
+                for d in definitions:
+                    if d["kind"] == "class":
+                        clauses.append(
+                            "(source_file = ? AND (source_symbol = ? OR source_symbol LIKE ?))"
+                        )
+                        params.extend([d["file_path"], d["qualified_name"], f"{d['qualified_name']}.%"])
+                    else:
+                        clauses.append("(source_file = ? AND source_symbol = ?)")
+                        params.extend([d["file_path"], d["qualified_name"]])
+                where_sql = " OR ".join(clauses)
                 callee_rows = conn.execute(
                     f"""
-                    SELECT DISTINCT source_file, source_symbol, target, line_number
+                    SELECT source_file, source_symbol, target, MIN(line_number) AS line_number
                     FROM edges
-                    WHERE edge_type = 'calls' AND source_symbol IN ({placeholders})
+                    WHERE edge_type = 'calls' AND ({where_sql})
+                    GROUP BY source_file, source_symbol, target
                     ORDER BY source_file, line_number
                     """,
-                    tuple(def_qnames),
+                    tuple(params),
                 ).fetchall()
                 callees = [dict(r) for r in callee_rows]
 
@@ -447,6 +457,47 @@ class GraphStore:
                     }
                 )
         return matches[:limit]
+
+    def repo_map(
+        self,
+        role: str | None = None,
+        scope: str | None = None,
+        include_summaries: bool = False,
+    ) -> dict[str, Any]:
+        """Return a fast, offline architectural map of indexed modules from SQLite."""
+        role_needle = role.strip().lower() if role else None
+        scope_needle = scope.strip().lstrip("./").rstrip("/") if scope else None
+
+        counts_by_role: dict[str, int] = {}
+        modules: list[dict[str, Any]] = []
+        for f in self.get_all_files():
+            path = f["path"]
+            if scope_needle and not (path == scope_needle or path.startswith(f"{scope_needle}/")):
+                continue
+            f_role = f["role"] or "unspecified"
+            if role_needle and f_role.lower() != role_needle:
+                continue
+            counts_by_role[f_role] = counts_by_role.get(f_role, 0) + 1
+            entry: dict[str, Any] = {
+                "path": path,
+                "role": f_role,
+                "patterns": f["patterns"],
+                "purpose": f["purpose"],
+                "exposes": f["exposes"],
+                "tests": f["tests"],
+                "line_count": f["line_count"],
+            }
+            if include_summaries and f["summary"]:
+                entry["summary"] = f["summary"]
+            modules.append(entry)
+
+        return {
+            "total_modules": len(modules),
+            "role_filter": role_needle,
+            "scope_filter": scope_needle,
+            "counts_by_role": dict(sorted(counts_by_role.items())),
+            "modules": modules,
+        }
 
     def stats(self) -> dict[str, int]:
         with self._connect() as conn:

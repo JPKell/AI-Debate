@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -10,13 +11,21 @@ from typing import Any
 
 from .config import ToolkitConfig, load_config
 from .indexer import reindex_project
-from .observability import log_agent_fallback, log_non_mcp_tool
+from .observability import log_agent_fallback, log_non_mcp_tool, recent_mcp_call
 
-RAW_PYTEST_RE = re.compile(r"(^|[;&|\s])(python3?\s+-m\s+)?pytest(\s|$)")
-RAW_RUFF_RE = re.compile(r"(^|[;&|\s])ruff\s+(check|format)(\s|$)")
+RAW_PYTEST_RE = re.compile(
+    r"(^|[;&|\s])(?:[\w./-]+/)?(?:python3?(?:\.\d+)?\s+-m\s+)?(?:[\w./-]+/)?pytest(\s|$)"
+)
+RAW_RUFF_RE = re.compile(r"(^|[;&|\s])(?:[\w./-]+/)?ruff\s+(check|format)(\s|$)")
 SEARCH_CMD_RE = re.compile(r"(^|[;&|\s])(grep|rg|ripgrep|find|fd|fdfind|ag|ack)(\s|$)")
 PROTECTED_FILENAMES = {".env", ".env.local", ".env.production", "secrets.json"}
 MCP_TOOL_NAMES = {"call_mcp_tool", "list_resources", "read_resource"}
+MCP_DISCOVERY_TOOLS = frozenset({"repo_map", "lookup_symbol", "find_similar", "get_conventions"})
+STOP_HOOK_MAX_SUMMARIES = 6
+MCP_SCHEMA_MARKERS = (
+    "/.gemini/antigravity-cli/mcp/",
+    "/.gemini/antigravity/mcp/",
+)
 
 
 def _read_stdin_payload() -> dict[str, Any]:
@@ -34,6 +43,8 @@ def _is_claude_payload(payload: dict[str, Any]) -> bool:
 
 
 def _agent_name(payload: dict[str, Any]) -> str:
+    if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_CI"):
+        return "codex"
     return "claude" if _is_claude_payload(payload) else "antigravity"
 
 
@@ -44,7 +55,15 @@ def _is_mcp_tool(tool_name: str) -> bool:
         or low.startswith("mcp__")
         or low.startswith("mcp_")
         or low.startswith("dev-tools_")
+        or low.startswith("project-dev")
     )
+
+
+def _is_mcp_schema_read(tool_name: str, path_str: str) -> bool:
+    if tool_name not in {"read_file", "Read"} or not path_str:
+        return False
+    norm = path_str.replace("\\", "/")
+    return any(marker in norm for marker in MCP_SCHEMA_MARKERS)
 
 
 def _resolve_root_from_payload(payload: dict[str, Any]) -> Path | None:
@@ -122,6 +141,8 @@ def _suggest_mcp_tool(
     tool_name: str,
     args: dict[str, Any],
     rel_path: Path | None,
+    *,
+    followed_mcp_tool: str | None = None,
 ) -> str | None:
     if tool_name in {"run_command", "Bash"}:
         cmd = _extract_cmd_arg(args)
@@ -141,7 +162,10 @@ def _suggest_mcp_tool(
         if posix in {".agents/RULES.md", ".agents/config.json"}:
             return "get_conventions"
         if _is_indexed_source_path(cfg, rel_path):
-            return "lookup_symbol / find_similar"
+            # Reading a source file right after an MCP discovery call is normal read-before-edit
+            if followed_mcp_tool in MCP_DISCOVERY_TOOLS:
+                return None
+            return "repo_map / lookup_symbol / find_similar"
     return None
 
 
@@ -157,11 +181,16 @@ def _record_non_mcp(
     if not tool_name or _is_mcp_tool(tool_name):
         return
     path_str = _extract_path_arg(args)
+    if _is_mcp_schema_read(tool_name, path_str):
+        return
     rel = _resolve_relative_path(cfg, path_str)
-    if rel is not None and (rel.as_posix() == ".agents/state" or rel.as_posix().startswith(".agents/state/")):
+    if (
+        rel is not None
+        and (rel.as_posix() == ".agents/state" or rel.as_posix().startswith(".agents/state/"))
+        and hook != "pre_tool_blocked"
+    ):
         # Still record blocked attempts to edit .agents/state/, skip routine reads of logs
-        if hook != "pre_tool_blocked":
-            return
+        return
 
     target = _extract_target_summary(tool_name, args)
     conv_id = payload.get("conversationId") or payload.get("session_id")
@@ -170,6 +199,7 @@ def _record_non_mcp(
     err_raw = payload.get("error")
     err_str = str(err_raw) if err_raw else None
 
+    followed_mcp, _ = recent_mcp_call(cfg.usage_log_path)
     log_non_mcp_tool(
         cfg.non_mcp_log_path,
         cfg.usage_log_path,
@@ -183,7 +213,9 @@ def _record_non_mcp(
         step_idx=step_idx,
         error=err_str,
         is_indexed_source=_is_indexed_source_path(cfg, rel),
-        suggested_mcp_tool=_suggest_mcp_tool(cfg, tool_name, args, rel),
+        suggested_mcp_tool=_suggest_mcp_tool(
+            cfg, tool_name, args, rel, followed_mcp_tool=followed_mcp
+        ),
         blocked_reason=blocked_reason,
     )
 
@@ -249,7 +281,8 @@ def handle_pre_tool(payload: dict[str, Any]) -> dict[str, Any]:
 
             if RAW_PYTEST_RE.search(cmd):
                 reason = (
-                    "Blocked by Tool-First guardrail: use MCP tool 'run_tests' instead of shell pytest "
+                    "Blocked by Tool-First guardrail: use MCP tool 'run_tests' "
+                    "(server: project-dev / dev-tools_project-dev) instead of shell pytest "
                     "for compact, machine-readable failure output."
                 )
                 _record_non_mcp(
@@ -258,7 +291,8 @@ def handle_pre_tool(payload: dict[str, Any]) -> dict[str, Any]:
                 return _deny_response(payload, reason)
             if RAW_RUFF_RE.search(cmd):
                 reason = (
-                    "Blocked by Tool-First guardrail: use MCP tool 'lint_and_headers' instead of shell ruff "
+                    "Blocked by Tool-First guardrail: use MCP tool 'lint_and_headers' "
+                    "(server: project-dev / dev-tools_project-dev) instead of shell ruff "
                     "so both Ruff lint and module headers are verified together."
                 )
                 _record_non_mcp(
@@ -274,7 +308,13 @@ def handle_stop(payload: dict[str, Any]) -> dict[str, Any]:
     """Incrementally update the knowledge graph (including OpenWeightGym summaries/embeddings) after each turn."""
     try:
         cfg = load_config(_resolve_root_from_payload(payload))
-        reindex_project(config=cfg, full=False, sync_remote=True, trigger="hook:stop")
+        reindex_project(
+            config=cfg,
+            full=False,
+            sync_remote=True,
+            trigger="hook:stop",
+            max_remote_summaries=STOP_HOOK_MAX_SUMMARIES,
+        )
     except Exception as exc:
         print(f"[dev-tools hook:stop] {exc}", file=sys.stderr)
     if _is_claude_payload(payload):
@@ -303,7 +343,7 @@ def handle_post_tool(payload: dict[str, Any]) -> dict[str, Any]:
                 )
         elif tool_name in {"read_file", "Read"}:
             target = _extract_path_arg(args)
-            if target and ".agents/state" not in target:
+            if target and ".agents/state" not in target and not _is_mcp_schema_read(tool_name, target):
                 log_agent_fallback(cfg.usage_log_path, tool_name, target)
         elif tool_name in {"run_command", "Bash", "Grep"}:
             cmd = _extract_cmd_arg(args) or str(args.get("pattern", ""))

@@ -131,13 +131,36 @@ def _make_sample_repo(tmp_path: Path) -> Path:
         " * Role: util\n"
         " * Patterns: none\n"
         " * Depends on: none\n"
-        " * Exposes: formatTotal\n"
+        " * Exposes: formatTotal, renderBadge\n"
         " * Tests: none\n"
         " * Invariants: Always returns a string.\n"
         " */\n\n"
         "export function formatTotal(n) {\n"
-        "  return String(n);\n"
-        "}\n",
+        '  return String(n ?? "")\n'
+        '    .replaceAll("&", "&amp;")\n'
+        "    .trim();\n"
+        "}\n\n"
+        "export const renderBadge = (n) => {\n"
+        "  return formatTotal(n);\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    (tmp_path / "app" / "page.js").write_text(
+        "/**\n"
+        " * Purpose: Mount the widget on the page.\n"
+        " * Role: util\n"
+        " * Patterns: none\n"
+        " * Depends on: app/widget.js\n"
+        " * Exposes: mountWidget\n"
+        " * Tests: none\n"
+        " * Invariants: Safe to call once.\n"
+        " */\n\n"
+        'import { formatTotal, renderBadge } from "./widget.js";\n\n'
+        "export function mountWidget(n) {\n"
+        "  return renderBadge(n) + formatTotal(n);\n"
+        "}\n\n"
+        "mountWidget(1);\n",
         encoding="utf-8",
     )
 
@@ -190,9 +213,9 @@ def test_indexer_owg_summaries_embeddings_and_incremental_skip(tmp_path: Path) -
     fake = FakeOWGClient()
 
     res = reindex_project(config=cfg, full=True, sync_remote=True, trigger="test", owg_client=fake)  # type: ignore[arg-type]
-    assert len(res["updated_files"]) == 4
-    assert len(res["summarized_files"]) == 4
-    assert len(res["embedded_files"]) == 4
+    assert len(res["updated_files"]) == 5
+    assert len(res["summarized_files"]) == 5
+    assert len(res["embedded_files"]) == 5
     assert res["invalid_headers"] == []
     assert res["remote_errors"] == []
 
@@ -201,7 +224,7 @@ def test_indexer_owg_summaries_embeddings_and_incremental_skip(tmp_path: Path) -
     fake.embed_calls.clear()
     inc = reindex_project(config=cfg, full=False, sync_remote=True, trigger="test-inc", owg_client=fake)  # type: ignore[arg-type]
     assert inc["updated_files"] == []
-    assert inc["skipped_unchanged"] == 4
+    assert inc["skipped_unchanged"] == 5
     assert fake.summary_calls == []
     assert fake.embed_calls == []
 
@@ -289,6 +312,7 @@ def test_lint_and_compact_test_runner(tmp_path: Path) -> None:
     assert tests_ok["ok"] is True
     assert tests_ok["passed"] == 1
     assert tests_ok["failures"] == []
+    assert tests_ok["python"]
 
     (repo / "tests" / "test_math.py").write_text(
         "def test_broken():\n    assert 1 == 2\n",
@@ -299,6 +323,7 @@ def test_lint_and_compact_test_runner(tmp_path: Path) -> None:
     assert tests_fail["failed"] == 1
     assert len(tests_fail["failures"]) == 1
     assert "test_broken" in tests_fail["failures"][0]["test"]
+    assert tests_fail["python"]
 
 
 def test_observability_and_stop_hook(tmp_path: Path) -> None:
@@ -324,17 +349,14 @@ def test_observability_and_stop_hook(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout.strip()) == {"decision": "allow"}
     # AST/header graph must still be populated even if OWG is unconfigured in temp repo
-    assert GraphStore(cfg.db_path).stats()["files"] == 4
+    assert GraphStore(cfg.db_path).stats()["files"] == 5
 
 
 def test_non_mcp_tool_usage_logging_and_metrics(tmp_path: Path) -> None:
     repo = _make_sample_repo(tmp_path)
     cfg = load_config(repo)
 
-    # Seed one MCP call so correlation works
-    log_mcp_call(cfg.usage_log_path, "lookup_symbol", {"symbol": "BillingService"}, 512, 5.0, ok=True)
-
-    # 1. Non-MCP read of an indexed source file -> logged with suggested_mcp_tool
+    # 1. Unguided non-MCP read of an indexed source file (before any MCP call) -> flagged as missed opportunity
     handle_post_tool(
         {
             "workspacePaths": [str(repo)],
@@ -342,6 +364,18 @@ def test_non_mcp_tool_usage_logging_and_metrics(tmp_path: Path) -> None:
             "modelName": "gemini",
             "stepIdx": 3,
             "toolCall": {"name": "read_file", "args": {"Path": str(repo / "app/calc_service.py")}},
+        }
+    )
+
+    # Seed an MCP discovery call; subsequent read_file on indexed source is normal read-before-edit (not missed!)
+    log_mcp_call(cfg.usage_log_path, "lookup_symbol", {"symbol": "BillingService"}, 512, 5.0, ok=True)
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "conversationId": "conv-1",
+            "modelName": "gemini",
+            "stepIdx": 4,
+            "toolCall": {"name": "read_file", "args": {"Path": str(repo / "app/math_util.py")}},
         }
     )
 
@@ -402,22 +436,29 @@ def test_non_mcp_tool_usage_logging_and_metrics(tmp_path: Path) -> None:
 
     lines = cfg.non_mcp_log_path.read_text(encoding="utf-8").splitlines()
     records = [json.loads(ln) for ln in lines]
-    assert len(records) == 6
+    assert len(records) == 7
     assert all(r["tool"] not in {"call_mcp_tool", "mcp__project-dev__run_tests"} for r in records)
 
+    # Record 0: unguided read -> flagged
     assert records[0]["tool"] == "read_file"
     assert records[0]["is_indexed_source"] is True
-    assert records[0]["suggested_mcp_tool"] == "lookup_symbol / find_similar"
+    assert records[0]["suggested_mcp_tool"] == "repo_map / lookup_symbol / find_similar"
     assert records[0]["conversation_id"] == "conv-1"
-    assert records[0]["followed_mcp_tool"] == "lookup_symbol"
+    assert records[0]["followed_mcp_tool"] is None
 
-    assert records[1]["suggested_mcp_tool"] == "get_conventions"
-    assert records[2]["suggested_mcp_tool"] == "lookup_symbol / find_similar"
-    assert records[3]["suggested_mcp_tool"] is None
-    assert records[4]["tool"] == "search_web"
-    assert records[5]["hook"] == "pre_tool_blocked"
-    assert records[5]["suggested_mcp_tool"] == "run_tests"
-    assert records[5]["blocked_reason"]
+    # Record 1: guided read right after lookup_symbol -> NOT flagged as missed opportunity
+    assert records[1]["tool"] == "read_file"
+    assert records[1]["is_indexed_source"] is True
+    assert records[1]["followed_mcp_tool"] == "lookup_symbol"
+    assert records[1]["suggested_mcp_tool"] is None
+
+    assert records[2]["suggested_mcp_tool"] == "get_conventions"
+    assert records[3]["suggested_mcp_tool"] == "lookup_symbol / find_similar"
+    assert records[4]["suggested_mcp_tool"] is None
+    assert records[5]["tool"] == "search_web"
+    assert records[6]["hook"] == "pre_tool_blocked"
+    assert records[6]["suggested_mcp_tool"] == "run_tests"
+    assert records[6]["blocked_reason"]
 
     metrics = summarize_metrics(
         cfg.usage_log_path,
@@ -425,12 +466,194 @@ def test_non_mcp_tool_usage_logging_and_metrics(tmp_path: Path) -> None:
         non_mcp_log_path=cfg.non_mcp_log_path,
     )
     non_mcp = metrics["non_mcp_summary"]
-    assert non_mcp["total_non_mcp_calls"] == 6
+    assert non_mcp["total_non_mcp_calls"] == 7
     assert non_mcp["blocked_attempts"] == 1
     assert non_mcp["mcp_opportunity_count"] == 4
     assert non_mcp["by_tool"]["run_command"] == 3
-    assert non_mcp["by_tool"]["read_file"] == 2
+    assert non_mcp["by_tool"]["read_file"] == 3
     assert non_mcp["by_tool"]["search_web"] == 1
     assert non_mcp["by_suggested_mcp"]["run_tests"] == 1
     assert non_mcp["by_suggested_mcp"]["get_conventions"] == 1
-    assert non_mcp["mcp_share_pct"] == 14.3
+    assert non_mcp["mcp_share_pct"] == 12.5
+
+
+def test_call_graph_signatures_class_callees_and_js_fidelity(tmp_path: Path) -> None:
+    repo = _make_sample_repo(tmp_path)
+    cfg = load_config(repo)
+    reindex_project(config=cfg, full=True, sync_remote=False, trigger="test-cg")
+
+    store = GraphStore(cfg.db_path)
+
+    # 1. Full typed Python signature must not be truncated at the first parameter colon
+    add_info = store.lookup_symbol("add_numbers")
+    assert add_info["definitions"][0]["signature"] == "def add_numbers(a: int, b: int) -> int"
+
+    # 2. Class lookup must include callees from its methods
+    billing_info = store.lookup_symbol("BillingService")
+    assert any(
+        c["source_symbol"] == "BillingService.total" and c["target"] == "add_numbers"
+        for c in billing_info["callees"]
+    )
+
+    # 3. JS arrow functions, named imports, module-level calls, and clean callees (no multiline chain noise)
+    fmt_info = store.lookup_symbol("formatTotal")
+    assert any(c["source_symbol"] == "renderBadge" for c in fmt_info["callers"])
+    assert any(c["source_symbol"] == "mountWidget" for c in fmt_info["callers"])
+    assert any(i["source_file"] == "app/page.js" for i in fmt_info["importers"])
+    assert all("\n" not in c["target"] for c in fmt_info["callees"])
+    assert all(c["target"] not in {"String", "trim"} for c in fmt_info["callees"])
+
+    badge_info = store.lookup_symbol("renderBadge")
+    assert len(badge_info["definitions"]) == 1
+    assert badge_info["definitions"][0]["file_path"] == "app/widget.js"
+    assert any(i["source_file"] == "app/page.js" for i in badge_info["importers"])
+
+    mount_info = store.lookup_symbol("mountWidget")
+    assert any(c["source_symbol"] == "<module>" for c in mount_info["callers"])
+
+
+def test_hook_guardrails_venv_paths_and_mcp_schema_reads(tmp_path: Path) -> None:
+    repo = _make_sample_repo(tmp_path)
+    cfg = load_config(repo)
+
+    # Block path-prefixed pytest and ruff binaries (.venv/bin/pytest, .venv/bin/python -m pytest, .venv/bin/ruff)
+    for cmd in (
+        ".venv/bin/pytest -q",
+        ".venv/bin/python -m pytest tests/",
+        "/opt/app-venv/bin/python3 -m pytest -q",
+        ".venv/bin/ruff check app/",
+    ):
+        res = handle_pre_tool(
+            {
+                "workspacePaths": [str(repo)],
+                "toolCall": {"name": "run_command", "args": {"CommandLine": cmd}},
+            }
+        )
+        assert res["decision"] == "deny", f"Expected deny for: {cmd}"
+
+    # Reading Antigravity MCP schema JSON must NOT be logged as fallback or non-MCP tool usage
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "toolCall": {
+                "name": "read_file",
+                "args": {"Path": "/home/user/.gemini/antigravity-cli/mcp/dev-tools_project-dev/run_tests.json"},
+            },
+        }
+    )
+    # Eager Antigravity MCP tool calls (mcp_dev-tools_project-dev_*) must NOT be logged as non-MCP
+    handle_post_tool(
+        {
+            "workspacePaths": [str(repo)],
+            "toolCall": {"name": "mcp_dev-tools_project-dev_run_tests", "args": {}},
+        }
+    )
+    assert not cfg.usage_log_path.exists()
+    # Only the 4 blocked attempts should be in non_mcp_log_path (neither schema read nor eager MCP call)
+    records = [json.loads(ln) for ln in cfg.non_mcp_log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 4
+    assert all(r["hook"] == "pre_tool_blocked" for r in records)
+
+
+def test_mcp_server_instructions_and_agent_configs() -> None:
+    import tomllib
+
+    from src.mcp_server import mcp
+
+    assert mcp.instructions and "lookup_symbol" in mcp.instructions and "run_tests" in mcp.instructions
+
+    repo_root = Path(__file__).resolve().parents[4]
+
+    # Antigravity plugin mcp_config.json marks tools eager
+    agy_mcp = json.loads(
+        (repo_root / ".agents/plugins/dev-tools/mcp_config.json").read_text(encoding="utf-8")
+    )
+    server_cfg = agy_mcp["mcpServers"]["project-dev"]
+    for tool_name in (
+        "repo_map",
+        "lookup_symbol",
+        "find_similar",
+        "get_conventions",
+        "run_tests",
+        "lint_and_headers",
+        "index_status",
+    ):
+        assert server_cfg["tools"][tool_name]["eager"] is True
+
+    # Claude Code settings pre-approve project-dev and disable deferred tool search
+    claude_settings = json.loads((repo_root / ".claude/settings.json").read_text(encoding="utf-8"))
+    assert "project-dev" in claude_settings.get("enabledMcpjsonServers", [])
+    assert claude_settings.get("env", {}).get("ENABLE_TOOL_SEARCH") == "false"
+    assert "mcp__project-dev__*" in claude_settings.get("permissions", {}).get("allow", [])
+
+    # Codex config.toml & hooks.json
+    codex_cfg = tomllib.loads((repo_root / ".codex/config.toml").read_text(encoding="utf-8"))
+    codex_srv = codex_cfg["mcp_servers"]["project-dev"]
+    assert codex_srv["enabled"] is True
+    assert codex_srv["tool_timeout_sec"] >= 120
+
+    codex_hooks = json.loads((repo_root / ".codex/hooks.json").read_text(encoding="utf-8"))
+    assert "PreToolUse" in codex_hooks["hooks"]
+    assert "PostToolUse" in codex_hooks["hooks"]
+    assert "Stop" in codex_hooks["hooks"]
+
+    # Plan tooling template exists in .agents/ and references all core MCP tools
+    plan_doc = (repo_root / ".agents/PLAN_TOOLING_SECTION.md").read_text(encoding="utf-8")
+    for tok in (
+        "repo_map",
+        "get_conventions",
+        "find_similar",
+        "lookup_symbol",
+        "run_tests",
+        "lint_and_headers",
+        "index_status",
+        "tool_metrics",
+    ):
+        assert tok in plan_doc
+
+
+def test_repo_map_and_bounded_concurrent_summarization(tmp_path: Path) -> None:
+    repo = _make_sample_repo(tmp_path)
+    cfg = load_config(repo)
+    fake = FakeOWGClient()
+
+    # Cap remote summaries (like hook:stop does) so large turns don't exceed hook timeouts
+    res_capped = reindex_project(
+        config=cfg,
+        full=True,
+        sync_remote=True,
+        trigger="hook:stop",
+        owg_client=fake,  # type: ignore[arg-type]
+        max_remote_summaries=2,
+    )
+    assert len(res_capped["summarized_files"]) == 2
+    assert res_capped["deferred_summaries"] == 3
+
+    # Follow-up uncapped reindex finishes the remaining 3 summaries concurrently
+    fake.summary_calls.clear()
+    res_rest = reindex_project(
+        config=cfg,
+        full=False,
+        sync_remote=True,
+        trigger="mcp:reindex",
+        owg_client=fake,  # type: ignore[arg-type]
+    )
+    assert len(res_rest["summarized_files"]) == 3
+    assert res_rest["deferred_summaries"] == 0
+    assert get_index_status(config=cfg)["fresh"] is True
+
+    store = GraphStore(cfg.db_path)
+    full_map = store.repo_map()
+    assert full_map["total_modules"] == 5
+    assert full_map["counts_by_role"]["util"] == 3
+    assert full_map["counts_by_role"]["service"] == 1
+    assert all("summary" not in m for m in full_map["modules"])
+
+    svc_map = store.repo_map(role="service", include_summaries=True)
+    assert svc_map["total_modules"] == 1
+    assert svc_map["modules"][0]["path"] == "app/calc_service.py"
+    assert "Summary for app/calc_service.py" in svc_map["modules"][0]["summary"]
+
+    scoped_map = store.repo_map(scope="app/widget.js")
+    assert scoped_map["total_modules"] == 1
+    assert scoped_map["modules"][0]["path"] == "app/widget.js"

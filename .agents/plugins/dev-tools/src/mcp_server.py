@@ -18,7 +18,19 @@ from .owg_client import OWGClient, load_owg_settings
 from .similarity import search_similar
 from .test_runner import run_compact_tests, run_lint_and_headers
 
-mcp = MCPServer("project-dev")
+SERVER_INSTRUCTIONS = (
+    "Tool-First Development MCP server (project-dev) backed by the project SQLite knowledge graph. "
+    "Use these tools BEFORE broad file reads or shell grep/pytest/ruff: "
+    "repo_map (fast offline architectural map of indexed modules, roles, purposes, and exports), "
+    "get_conventions (rules/patterns/examples for a role or area), "
+    "find_similar (semantic search for closest existing modules), "
+    "lookup_symbol (definitions, callers, callees, importers, and covering tests), "
+    "run_tests (compact failure-only pytest runner — use instead of shell pytest), "
+    "lint_and_headers (Ruff + module header validation — use instead of shell ruff), "
+    "index_status / reindex (knowledge-graph freshness), and tool_metrics (adoption stats)."
+)
+
+mcp = MCPServer("project-dev", instructions=SERVER_INSTRUCTIONS)
 
 
 def _run_observed(
@@ -68,6 +80,25 @@ def _extract_rules_sections(rules_text: str, topic: str) -> list[str]:
     if not matched:
         return [rules_text[:2500]]
     return matched[:5]
+
+
+@mcp.tool()
+def repo_map(
+    role: str | None = None,
+    scope: str | None = None,
+    include_summaries: bool = False,
+) -> str:
+    """Return a fast offline architectural map of indexed modules (path, role, purpose, exports, tests)."""
+
+    def _exec(cfg: ToolkitConfig) -> dict[str, Any]:
+        store = GraphStore(cfg.db_path)
+        return store.repo_map(role=role, scope=scope, include_summaries=include_summaries)
+
+    return _run_observed(
+        "repo_map",
+        {"role": role, "scope": scope, "include_summaries": include_summaries},
+        _exec,
+    )
 
 
 @mcp.tool()
