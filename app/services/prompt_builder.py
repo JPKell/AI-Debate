@@ -100,6 +100,7 @@ def compose_system_prompt(
     opponent_label: str,
     scene_prompt: str,
     narrator_enabled: bool = False,
+    narrator_label: str = "Narrator",
 ) -> str:
     """Compose the full system prompt for one debating model.
 
@@ -108,16 +109,18 @@ def compose_system_prompt(
         opponent_label: Display label of the opposing participant.
         scene_prompt: Shared topic / framing for the debate.
         narrator_enabled: Whether the 3rd Action Narrator model is active in this debate.
+        narrator_label: Display label used to prefix Action Narrator messages in history.
     Returns:
         System prompt string ready for the LLM `system` message.
     Side effects:
         None.
     """
+    effective_narrator = narrator_label.strip() or "Narrator"
     rules: list[str] = []
     if participant.dialogue_only:
         rules.append(
             f"- Direct dialogue only: speak directly to '{opponent_label}' only. "
-            "Do not address an audience, moderator, or narrator, and do not write third-person prose or stage directions."
+            "Do not address an audience, moderator, or narrator directly, and do not write third-person prose or stage directions."
         )
     if participant.no_thoughts_as_actions:
         rules.append(
@@ -125,9 +128,24 @@ def compose_system_prompt(
             "as actions, italics, or dialogue. Output only observable spoken words or outward behavior."
         )
     if participant.no_self_narration or narrator_enabled:
+        if narrator_enabled:
+            rules.append(
+                "- Do not narrate physical actions, scene changes, or outcomes for yourself or others; "
+                f"'{effective_narrator}' handles describing physical actions and consequences. "
+                f"Respond through your spoken words to '{opponent_label}', reacting to what just happened."
+            )
+        else:
+            rules.append(
+                "- Do not narrate physical actions, scene changes, or outcomes for yourself or others; "
+                "a separate Action Narrator handles scene actions and consequences. Focus on what you say."
+            )
+    if narrator_enabled:
         rules.append(
-            "- Do not narrate physical actions, scene changes, or outcomes for yourself or others; "
-            "a separate Action Narrator handles scene actions and consequences. Focus on what you say."
+            f"- React to narrated scene events: messages prefixed with '[{effective_narrator}]:' describe real, "
+            "observable physical actions, gestures, and environmental events happening in the scene right now. "
+            f"You witness these events directly — acknowledge and react to the latest '[{effective_narrator}]:' "
+            f"developments naturally in your response to '{opponent_label}' without ignoring or contradicting them "
+            "(and without speaking directly to the narrator)."
         )
 
     if participant.system_prompt_override.strip():
@@ -153,10 +171,17 @@ def compose_system_prompt(
         if participant.dialogue_only
         else f"You are '{my_label}', participating in a live back-and-forth debate against '{opponent_label}'."
     )
+    guidance_line = (
+        f"Respond directly to '{opponent_label}' in character, reacting naturally to both their words and "
+        f"any live physical events or actions described by '[{effective_narrator}]:'. "
+        "Keep each turn focused and engaging (avoid repeating earlier points verbatim)."
+        if narrator_enabled
+        else "Respond directly to your opponent in clear, substantive, well-structured prose. "
+        "Keep each turn focused and engaging (avoid repeating earlier points verbatim)."
+    )
     parts: list[str] = [
         opening_line,
-        "Respond directly to your opponent in clear, substantive, well-structured prose. "
-        "Keep each turn focused and engaging (avoid repeating earlier points verbatim).",
+        guidance_line,
     ]
     if style_text:
         parts.append(f"Debate Style:\n{style_text}")
@@ -310,6 +335,7 @@ def build_messages_for_speaker(
 
     participant = debate.model_a_config if speaker == "A" else debate.model_b_config
     opponent = debate.model_b_config if speaker == "A" else debate.model_a_config
+    my_label = participant.effective_label("Model A" if speaker == "A" else "Model B")
     opponent_label = opponent.effective_label("Model B" if speaker == "A" else "Model A")
     narrator_label = debate.narrator_config.effective_label("Narrator")
 
@@ -318,6 +344,7 @@ def build_messages_for_speaker(
         opponent_label=opponent_label,
         scene_prompt=debate.scene_prompt,
         narrator_enabled=debate.narrator_enabled,
+        narrator_label=narrator_label,
     )
 
     effective_history = history
@@ -352,6 +379,11 @@ def build_messages_for_speaker(
         messages.append({"role": "user", "content": opening})
         return messages
 
+    has_narrator_context = debate.narrator_enabled or any(
+        m.sender == "narrator" for m in effective_history
+    )
+    narrator_in_latest_user_turn = False
+
     # Convert history strictly from the speaking model's perspective, excluding all thinking text.
     for msg in effective_history:
         text = msg.content.strip()
@@ -360,15 +392,17 @@ def build_messages_for_speaker(
         if msg.sender == speaker:
             role = "assistant"
             content = text
+            narrator_in_latest_user_turn = False
         elif msg.sender == "moderator":
             role = "user"
             content = f"[Moderator]: {text}"
         elif msg.sender == "narrator":
             role = "user"
             content = f"[{narrator_label}]: {text}"
+            narrator_in_latest_user_turn = True
         else:
             role = "user"
-            content = text
+            content = f"[{opponent_label}]: {text}" if has_narrator_context else text
 
         # Many llama.cpp / Jinja chat templates require the first non-system message to be 'user'.
         if len(messages) == 1 and role == "assistant":
@@ -379,7 +413,10 @@ def build_messages_for_speaker(
                 {
                     "role": "user",
                     "content": (
-                        f"The debate is now beginning{topic_hint}. Please deliver your opening statement "
+                        f"The exchange with '{opponent_label}' is beginning{topic_hint}. "
+                        f"Deliver your opening line directly to '{opponent_label}'."
+                        if participant.dialogue_only
+                        else f"The debate is now beginning{topic_hint}. Please deliver your opening statement "
                         "clearly establishing your position."
                     ),
                 }
@@ -398,6 +435,11 @@ def build_messages_for_speaker(
                 "role": "user",
                 "content": "Please continue your argument and respond to the debate so far.",
             }
+        )
+    elif narrator_in_latest_user_turn:
+        messages[-1]["content"] = (
+            f"{messages[-1]['content']}\n\n"
+            f"[Respond as {my_label} directly to {opponent_label}, reacting naturally to the latest {narrator_label} scene event above.]"
         )
 
     return messages

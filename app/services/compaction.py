@@ -220,7 +220,8 @@ class CompactionService:
                     "information-dense digest (max ~350 words) preserving:\n"
                     "1. Each debater's core thesis and key supporting arguments.\n"
                     "2. Specific concessions, rebuttals, or moderator directions.\n"
-                    "3. Remaining open points of disagreement.\n"
+                    "3. Key narrated physical actions, scene events, and current physical state (if a Narrator is active).\n"
+                    "4. Remaining open points of disagreement.\n"
                     "Write neutrally with clear attribution. Do not invent claims."
                 ),
             },

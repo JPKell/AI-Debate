@@ -8,14 +8,14 @@
  * Invariants: Never receives or displays plaintext API keys from the backend.
  */
 
-import { apiRequest } from "./api.js";
+import { apiRequest, formatErrorMessage } from "./api.js";
 import { escapeHtml } from "./markdown.js";
 
 const el = (id) => document.getElementById(id);
 
 function showBanner(text, isError = false) {
   const b = el("admin-banner");
-  el("admin-banner-text").textContent = text;
+  el("admin-banner-text").textContent = formatErrorMessage(text, "");
   b.classList.remove("hidden", "banner-error");
   if (isError) b.classList.add("banner-error");
 }

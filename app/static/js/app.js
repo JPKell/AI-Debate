@@ -8,7 +8,7 @@
  * Invariants: Never hard-codes model IDs; always populates model dropdowns from GET /api/models; redirects to /login on 401.
  */
 
-import { apiRequest } from "./api.js";
+import { apiRequest, formatErrorMessage } from "./api.js";
 import { escapeHtml, renderMarkdown } from "./markdown.js";
 import { DebateStreamClient } from "./sse.js";
 
@@ -128,7 +128,8 @@ const streamClient = new DebateStreamClient({
       renderLiveTurn();
     }
     if (meta.ignored_parameters) {
-      showBanner(`Model ignored unsupported parameters: ${meta.ignored_parameters}`, false);
+      const ignoredText = formatErrorMessage(meta.ignored_parameters, String(meta.ignored_parameters));
+      showBanner(`Model ignored unsupported parameters: ${ignoredText}`, false);
     }
     if (meta.allowance_warning) {
       showBanner("Spending allowance warning from openWeightGym (nearing limit).", false);
@@ -231,7 +232,7 @@ function upsertMessage(msg) {
 function showBanner(text, isError = false, action = null) {
   const banner = el("banner");
   const actionWrap = el("banner-action");
-  el("banner-text").textContent = text;
+  el("banner-text").textContent = formatErrorMessage(text, "");
   actionWrap.innerHTML = "";
   if (action && action.label && typeof action.onClick === "function") {
     const btn = document.createElement("button");
@@ -440,6 +441,18 @@ function updateNarratorStatusPill() {
   pill.classList.add("enabled");
 }
 
+function readNumberField(id, fallback, { integer = false } = {}) {
+  const raw = el(id)?.value;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return fallback;
+  }
+  const num = Number(raw);
+  if (!Number.isFinite(num)) {
+    return fallback;
+  }
+  return integer ? Math.trunc(num) : num;
+}
+
 function readNarratorFromUI() {
   const effortEl = el("narrator-effort");
   const seedRaw = el("narrator-seed") ? el("narrator-seed").value.trim() : "";
@@ -448,9 +461,9 @@ function readNarratorFromUI() {
     model_id: el("narrator-model")?.value || "",
     label: el("narrator-label")?.value.trim() || "Narrator",
     system_prompt: el("narrator-prompt")?.value || "",
-    temperature: Number(el("narrator-temp")?.value || 0.7),
+    temperature: readNumberField("narrator-temp", 0.7),
     top_p: 0.95,
-    max_tokens: Number(el("narrator-max-tokens")?.value || 1024),
+    max_tokens: readNumberField("narrator-max-tokens", 1024, { integer: true }),
     seed: seedVal,
     thinking_mode: el("narrator-thinking")?.value || "default",
     reasoning_effort: effortEl && effortEl.value ? effortEl.value : null,
@@ -500,9 +513,9 @@ function readParticipantFromUI(slot) {
     dialogue_only: Boolean(el(`${slot}-dialogue-only`)?.checked),
     no_thoughts_as_actions: Boolean(el(`${slot}-no-thoughts`)?.checked),
     no_self_narration: Boolean(el(`${slot}-no-self-narration`)?.checked),
-    temperature: Number(el(`${slot}-temp`).value || 0.7),
-    top_p: Number(el(`${slot}-top-p`).value || 0.95),
-    max_tokens: Number(el(`${slot}-max-tokens`).value || 2048),
+    temperature: readNumberField(`${slot}-temp`, 0.7),
+    top_p: readNumberField(`${slot}-top-p`, 0.95),
+    max_tokens: readNumberField(`${slot}-max-tokens`, 2048, { integer: true }),
     seed: seedVal,
     thinking_mode: el(`${slot}-thinking`).value || "default",
     reasoning_effort: effortEl && effortEl.value ? effortEl.value : null,
@@ -550,12 +563,13 @@ function composeSystemPromptPreview(slot) {
   const opp = readParticipantFromUI(other);
   const scene = (el("scene-prompt")?.value || "").trim();
   const narratorEnabled = Boolean(el("narrator-enabled")?.checked);
+  const narratorLabel = (el("narrator-label")?.value || "").trim() || "Narrator";
   const oppLabel = opp.label || opp.model_id || (other === "a" ? "Model A" : "Model B");
 
   const rules = [];
   if (me.dialogue_only) {
     rules.push(
-      `- Direct dialogue only: speak directly to '${oppLabel}' only. Do not address an audience, moderator, or narrator, and do not write third-person prose or stage directions.`
+      `- Direct dialogue only: speak directly to '${oppLabel}' only. Do not address an audience, moderator, or narrator directly, and do not write third-person prose or stage directions.`
     );
   }
   if (me.no_thoughts_as_actions) {
@@ -565,7 +579,14 @@ function composeSystemPromptPreview(slot) {
   }
   if (me.no_self_narration || narratorEnabled) {
     rules.push(
-      "- Do not narrate physical actions, scene changes, or outcomes for yourself or others; a separate Action Narrator handles scene actions and consequences. Focus on what you say."
+      narratorEnabled
+        ? `- Do not narrate physical actions, scene changes, or outcomes for yourself or others; '${narratorLabel}' handles describing physical actions and consequences. Respond through your spoken words to '${oppLabel}', reacting to what just happened.`
+        : "- Do not narrate physical actions, scene changes, or outcomes for yourself or others; a separate Action Narrator handles scene actions and consequences. Focus on what you say."
+    );
+  }
+  if (narratorEnabled) {
+    rules.push(
+      `- React to narrated scene events: messages prefixed with '[${narratorLabel}]:' describe real, observable physical actions, gestures, and environmental events happening in the scene right now. You witness these events directly — acknowledge and react to the latest '[${narratorLabel}]:' developments naturally in your response to '${oppLabel}' without ignoring or contradicting them (and without speaking directly to the narrator).`
     );
   }
 
@@ -594,10 +615,11 @@ function composeSystemPromptPreview(slot) {
     ? `You are '${myLabel}', speaking directly to '${oppLabel}' in a live back-and-forth exchange.`
     : `You are '${myLabel}', participating in a live back-and-forth debate against '${oppLabel}'.`;
 
-  const parts = [
-    openingLine,
-    "Respond directly to your opponent in clear, substantive, well-structured prose. Keep each turn focused and engaging (avoid repeating earlier points verbatim).",
-  ];
+  const guidanceLine = narratorEnabled
+    ? `Respond directly to '${oppLabel}' in character, reacting naturally to both their words and any live physical events or actions described by '[${narratorLabel}]:'. Keep each turn focused and engaging (avoid repeating earlier points verbatim).`
+    : "Respond directly to your opponent in clear, substantive, well-structured prose. Keep each turn focused and engaging (avoid repeating earlier points verbatim).";
+
+  const parts = [openingLine, guidanceLine];
   if (styleText) parts.push(`Debate Style:\n${styleText}`);
   if (convText) parts.push(convText);
   if (me.side.trim()) parts.push(`Your Assigned Side / Position:\n${me.side.trim()}`);
@@ -616,21 +638,25 @@ function updatePromptPreviews() {
 }
 
 function readDebatePayloadFromUI() {
-  const turnRaw = el("turn-limit").value;
-  const minRaw = el("time-limit-min").value;
+  const turnRaw = el("turn-limit").value.trim();
+  const minRaw = el("time-limit-min").value.trim();
+  const turnNum = turnRaw !== "" && Number.isFinite(Number(turnRaw)) ? Math.trunc(Number(turnRaw)) : null;
+  const timeSecs =
+    minRaw !== "" && Number.isFinite(Number(minRaw)) ? Math.round(Number(minRaw) * 60) : null;
+  const cadenceN = Math.max(1, readNumberField("narrator-cadence-n", 1, { integer: true }));
   return {
     title: el("debate-title").value.trim() || "Untitled Debate",
     scene_prompt: el("scene-prompt").value || "",
     first_speaker: el("first-speaker").value || "A",
-    turn_limit: turnRaw ? Number(turnRaw) : null,
-    time_limit_seconds: minRaw ? Math.round(Number(minRaw) * 60) : null,
+    turn_limit: turnNum,
+    time_limit_seconds: timeSecs,
     show_thinking: el("toggle-thinking").checked,
     model_a_config: readParticipantFromUI("a"),
     model_b_config: readParticipantFromUI("b"),
     narrator_enabled: Boolean(el("narrator-enabled")?.checked),
     narrator_config: readNarratorFromUI(),
     narrator_cadence_mode: el("narrator-cadence-mode")?.value || "every_turn",
-    narrator_cadence_n: Math.max(1, Number(el("narrator-cadence-n")?.value || 1)),
+    narrator_cadence_n: cadenceN,
   };
 }
 
@@ -1090,6 +1116,13 @@ async function createFreshDebate() {
   hideBanner();
   const modelA = state.models[0]?.id || "";
   const modelB = state.models[1]?.id || state.models[0]?.id || "";
+  const defaultLabel = (modelId, slotLetter) => {
+    if (!modelId) return `Model ${slotLetter}`;
+    const suffix = ` (${slotLetter})`;
+    return modelId.length + suffix.length <= 80
+      ? `${modelId}${suffix}`
+      : `${modelId.slice(0, 80 - suffix.length - 1)}…${suffix}`;
+  };
   const created = await apiRequest("/api/debates", {
     method: "POST",
     body: {
@@ -1100,7 +1133,7 @@ async function createFreshDebate() {
       show_thinking: state.user ? state.user.show_thinking_default : true,
       model_a_config: {
         model_id: modelA,
-        label: modelA ? `${modelA} (A)` : "Model A",
+        label: defaultLabel(modelA, "A"),
         style: "adversarial",
         conviction: "firm",
         side: "",
@@ -1108,7 +1141,7 @@ async function createFreshDebate() {
       },
       model_b_config: {
         model_id: modelB,
-        label: modelB ? `${modelB} (B)` : "Model B",
+        label: defaultLabel(modelB, "B"),
         style: "adversarial",
         conviction: "firm",
         side: "",
@@ -1517,8 +1550,8 @@ function bindEvents() {
     const node = el(id);
     if (!node) continue;
     const isToggle = node.tagName === "SELECT" || node.type === "checkbox";
-    const evt = isToggle ? "change" : "input";
-    node.addEventListener(evt, () => {
+    const isNumber = node.type === "number";
+    const onFieldUpdate = (allowInvalidSave) => {
       if (id === "a-model") updateModelMetadataUI("a");
       if (id === "b-model") updateModelMetadataUI("b");
       if (id === "narrator-model") updateNarratorModelMetadataUI();
@@ -1542,8 +1575,15 @@ function bindEvents() {
       if (id === "a-max-tokens" || id === "a-thinking") updateTokenWarning("a");
       if (id === "b-max-tokens" || id === "b-thinking") updateTokenWarning("b");
       updatePromptPreviews();
-      scheduleSave();
-    });
+      if (allowInvalidSave || !isNumber || node.checkValidity()) {
+        scheduleSave();
+      }
+    };
+    const evt = isToggle ? "change" : "input";
+    node.addEventListener(evt, () => onFieldUpdate(false));
+    if (isNumber) {
+      node.addEventListener("change", () => onFieldUpdate(true));
+    }
   }
 
   // Lifecycle buttons

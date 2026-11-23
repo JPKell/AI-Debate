@@ -8,7 +8,7 @@
  * Invariants: Never stores plaintext passwords; redirects to `/` immediately after authentication succeeds.
  */
 
-import { apiRequest } from "./api.js";
+import { apiRequest, formatErrorMessage } from "./api.js";
 
 const el = (id) => document.getElementById(id);
 
@@ -16,7 +16,7 @@ let mode = "login"; // "login" | "register" | "bootstrap"
 let openRegistration = false;
 
 function showError(msg) {
-  el("auth-banner-text").textContent = msg;
+  el("auth-banner-text").textContent = formatErrorMessage(msg, "Authentication failed.");
   el("auth-banner").classList.remove("hidden");
 }
 

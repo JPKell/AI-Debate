@@ -3,7 +3,7 @@ Purpose: End-to-end tests for DebateManager orchestration, global single-debate 
 Role: test
 Patterns: contract-first-test, service-layer, repository-pattern, streaming-pipeline
 Depends on: app.repositories.db, app.repositories.debates_repo, app.services.llm_client, app.services.debate_manager, app.schemas, httpx
-Exposes: test_end_to_end_two_model_debate_and_limits, test_global_single_debate_lock_conflict, test_fork_swap_sides_and_moderator_interjection, test_pause_resume_continue_and_mid_debate_reconnect_snapshot, test_cross_user_409_redaction_and_export_filters, test_upstream_404_and_503_turnstile_handling, test_narrator_every_turn_every_n_and_random_cadence
+Exposes: test_end_to_end_two_model_debate_and_limits, test_global_single_debate_lock_conflict, test_fork_swap_sides_and_moderator_interjection, test_pause_resume_continue_and_mid_debate_reconnect_snapshot, test_cross_user_409_redaction_and_export_filters, test_upstream_404_and_503_turnstile_handling, test_narrator_every_turn_every_n_and_random_cadence, test_validation_error_returns_structured_human_readable_message
 Tests: tests/test_debate_flow.py
 Invariants: Uses isolated temporary SQLite databases and mocked openWeightGym SSE responses.
 """
@@ -581,4 +581,53 @@ async def test_narrator_every_turn_every_n_and_random_cadence(
     assert forked.model_a_config.dialogue_only is True
     assert forked.model_a_config.no_thoughts_as_actions is True
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_validation_error_returns_structured_human_readable_message(tmp_path: Path) -> None:
+    from app.config import AppConfig
+    from app.main import create_app
+
+    cfg = AppConfig(
+        owg_protocol="http",
+        owg_host="mock-owg",
+        owg_port=8442,
+        owg_api_key="secret",
+        data_dir=tmp_path,
+    )
+    app = create_app(cfg)
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/auth/register", json={"username": "valuser", "password": "password123"})
+            created = (
+                await client.post(
+                    "/api/debates",
+                    json={
+                        "title": "Validation Debate",
+                        "model_a_config": {"model_id": "m-a"},
+                        "model_b_config": {"model_id": "m-b"},
+                    },
+                )
+            ).json()
+
+            resp = await client.patch(
+                f"/api/debates/{created['id']}",
+                json={
+                    "turn_limit": 0,
+                    "model_a_config": {"model_id": "m-a", "max_tokens": 5},
+                },
+            )
+            assert resp.status_code == 422
+            payload = resp.json()
+            assert "error" in payload
+            assert payload["error"]["code"] == "validation_error"
+            assert isinstance(payload["error"]["message"], str)
+            assert "[object Object]" not in payload["error"]["message"]
+            assert "turn_limit" in payload["error"]["message"]
+            assert "max_tokens" in payload["error"]["message"]
+            assert isinstance(payload["error"]["details"]["fields"], list)
+            assert len(payload["error"]["details"]["fields"]) == 2
+
 

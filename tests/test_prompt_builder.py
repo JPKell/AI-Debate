@@ -3,7 +3,7 @@ Purpose: Unit tests for prompt composition, roleplay/dialogue rules, narrator pr
 Role: test
 Patterns: contract-first-test
 Depends on: app.services.prompt_builder, app.schemas
-Exposes: test_compose_system_prompt_includes_style_conviction_side, test_turn_one_opening_message, test_role_flipping_and_thinking_exclusion, test_moderator_interjection_formatting, test_roleplay_dialogue_constraints_and_narrator_prompts
+Exposes: test_compose_system_prompt_includes_style_conviction_side, test_turn_one_opening_message, test_role_flipping_and_thinking_exclusion, test_moderator_interjection_formatting, test_roleplay_dialogue_constraints_and_narrator_prompts, test_characters_receive_narrator_reaction_instructions_and_cue
 Tests: tests/test_prompt_builder.py
 Invariants: Thinking text must never appear in messages sent to any model (A, B, or Narrator).
 """
@@ -234,3 +234,125 @@ def test_roleplay_dialogue_constraints_and_narrator_prompts() -> None:
     msgs_a = build_messages_for_speaker(debate=debate, history=history, speaker="A")
     assert "[Scene Narrator]: Vance leans forward as rain lashes the tavern window." in str(msgs_a)
     assert "SECRET_" not in str(msgs_a)
+
+
+def test_characters_receive_narrator_reaction_instructions_and_cue() -> None:
+    debate = DebateRecord(
+        id="deb-rp-react",
+        title="Tavern Explosion",
+        scene_prompt="Two rival detectives meet in a rain-soaked tavern.",
+        first_speaker="A",
+        resolved_first_speaker="A",
+        status="running",
+        turn_limit=6,
+        narrator_enabled=True,
+        narrator_config=NarratorConfig(model_id="model-narrator", label="Scene Narrator"),
+        narrator_cadence_mode="every_turn",
+        narrator_cadence_n=1,
+        model_a_config=ModelParticipantConfig(
+            model_id="model-a",
+            label="Detective Vance",
+            style="adversarial",
+            conviction="firm",
+            side="Demand the ledger.",
+            dialogue_only=True,
+            no_thoughts_as_actions=True,
+            no_self_narration=True,
+        ),
+        model_b_config=ModelParticipantConfig(
+            model_id="model-b",
+            label="Inspector Mara",
+            style="explorative",
+            conviction="balanced",
+            side="Protect the witness.",
+            system_prompt_override="You are Inspector Mara, a wary veteran investigator.",
+            dialogue_only=True,
+        ),
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+
+    # Auto-composed and override system prompts both explain how to react to [Scene Narrator]
+    sys_a = compose_system_prompt(
+        participant=debate.model_a_config,
+        opponent_label="Inspector Mara",
+        scene_prompt=debate.scene_prompt,
+        narrator_enabled=True,
+        narrator_label="Scene Narrator",
+    )
+    assert "[Scene Narrator]:" in sys_a
+    assert "react" in sys_a.lower()
+
+    sys_b = compose_system_prompt(
+        participant=debate.model_b_config,
+        opponent_label="Detective Vance",
+        scene_prompt=debate.scene_prompt,
+        narrator_enabled=True,
+        narrator_label="Scene Narrator",
+    )
+    assert "You are Inspector Mara" in sys_b
+    assert "[Scene Narrator]:" in sys_b
+    assert "react" in sys_b.lower()
+
+    history = [
+        MessageRecord(
+            id="m1",
+            debate_id="deb-rp-react",
+            turn_index=1,
+            sender="A",
+            model_id="model-a",
+            content="Put the ledger on the table, Mara.",
+            created_at="2026-01-01T00:00:01Z",
+        ),
+        MessageRecord(
+            id="m2",
+            debate_id="deb-rp-react",
+            turn_index=2,
+            sender="narrator",
+            model_id="model-narrator",
+            content="A brick crashes through the tavern window and shatters the lantern.",
+            created_at="2026-01-01T00:00:02Z",
+        ),
+    ]
+
+    # Speaker B sees A's dialogue clearly labeled separately from Scene Narrator + a reaction cue
+    msgs_b = build_messages_for_speaker(debate=debate, history=history, speaker="B")
+    assert [m["role"] for m in msgs_b] == ["system", "user"]
+    assert "[Detective Vance]: Put the ledger on the table, Mara." in msgs_b[1]["content"]
+    assert "[Scene Narrator]: A brick crashes through the tavern window" in msgs_b[1]["content"]
+    assert "Inspector Mara" in msgs_b[1]["content"]
+    assert "react" in msgs_b[1]["content"].lower()
+
+    # After B replies and narrator acts again, A's own assistant turn stays unprefixed while B & Narrator are attributed
+    history.extend(
+        [
+            MessageRecord(
+                id="m3",
+                debate_id="deb-rp-react",
+                turn_index=3,
+                sender="B",
+                model_id="model-b",
+                content="Get down, Vance! Someone followed us!",
+                created_at="2026-01-01T00:00:03Z",
+            ),
+            MessageRecord(
+                id="m4",
+                debate_id="deb-rp-react",
+                turn_index=4,
+                sender="narrator",
+                model_id="model-narrator",
+                content="Footsteps sprint away down the flooded alley outside.",
+                created_at="2026-01-01T00:00:04Z",
+            ),
+        ]
+    )
+    msgs_a = build_messages_for_speaker(debate=debate, history=history, speaker="A")
+    assert [m["role"] for m in msgs_a] == ["system", "user", "assistant", "user"]
+    assert msgs_a[2]["content"] == "Put the ledger on the table, Mara."
+    assert "[Inspector Mara]: Get down, Vance! Someone followed us!" in msgs_a[3]["content"]
+    assert "[Scene Narrator]: Footsteps sprint away down the flooded alley outside." in msgs_a[3]["content"]
+    assert "Detective Vance" in msgs_a[3]["content"]
+    assert "react" in msgs_a[3]["content"].lower()
+    # Synthetic opening prompt for dialogue_only stays in direct-exchange framing
+    assert "directly to 'Inspector Mara'" in msgs_a[1]["content"]
+
